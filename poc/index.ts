@@ -1,4 +1,5 @@
 import { PublicKey } from "@solana/web3.js";
+import { write, writeFile, writeFileSync } from "fs";
 
 const web3 = require("@solana/web3.js");
 
@@ -26,7 +27,8 @@ TargetOrders: 3jCTzX4pmoyr9Wxe1CiHaM8it3ZHPS3WNdtwAwwD8ZBi
 
 // Define the connection to the Solana cluster
 const connection = new web3.Connection(
-  "https://ancient-chaotic-aura.solana-mainnet.quiknode.pro/316c14d6ae6c6f4a358f0a44b3e34244e6e34783"
+  // "https://ancient-chaotic-aura.solana-mainnet.quiknode.pro/316c14d6ae6c6f4a358f0a44b3e34244e6e34783"
+  "https://tame-ancient-mountain.solana-mainnet.quiknode.pro/6a9a95bf7bbb108aea620e7ee4c1fd5e1b67cc62"
 );
 const openbookProgram = new PublicKey(
   "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX"
@@ -36,46 +38,54 @@ const raydium_liquidity_pool_v4_program = new PublicKey("675kPX9MHTjS2zt1qfr1NYH
 async function analyze() {
   // Analyze Raydium Market
   // let marketAddress = new PublicKey('Ho9rEHJoaB3T9j6Anv2AH75ftUsLrJWvn4ffEN3GiYBn')
-  // let real_market_data: any = {"id":"Ho9rEHJoaB3T9j6Anv2AH75ftUsLrJWvn4ffEN3GiYBn","baseMint":"AuqvqC8NhrGMUJaJwUqoYkAnxyQqKZA6tF52ZxmnFTmS","quoteMint":"So11111111111111111111111111111111111111112","lpMint":"2jxc3ntvEd7nbegViQH92C91iQUTfJMmprDnn5oEHMah","baseDecimals":3,"quoteDecimals":9,"lpDecimals":3,"version":4,"programId":"675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8","authority":"5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1","openOrders":"HBFRsHMkaQCJrmXh6CnSwFEAdhNJPAWknHAobcL2t64Q","targetOrders":"3jCTzX4pmoyr9Wxe1CiHaM8it3ZHPS3WNdtwAwwD8ZBi","baseVault":"C72p29iFxFKDgzYrYexRsXHZm4uyJfHgTXaap1wYUdKa","quoteVault":"4xs2C45PntyLP5KaSaLaxjMoNGaseq2D5q2R6YrzDxw6","withdrawQueue":"11111111111111111111111111111111","lpVault":"11111111111111111111111111111111","marketVersion":4,"marketProgramId":"srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX","marketId":"6HXQpNkcy9KKkxWi8rhCfxfdLZQuDAj7HjUqRY244mC3","marketAuthority":"C1cPxTExbSsjC7xhhgQgD8JndqzgsHSBVdGrzCWo5783","marketBaseVault":"4UqwHi7PYXqjDQzej9Qu4vfowm4zycwgX2sQwu2tGfR6","marketQuoteVault":"BbXehiDafme9ZYrxpHiPWedtTqBwm2ZgMJGEBvoXmfSu","marketBids":"7NPj9YNeTH6JxSYn5HRpbjKGnsC95dAx1GehVoTDr8Nz","marketAsks":"GSSqqMuSY8s6cxkVaqvKNWDYT1tapfMns8mZ6BKBGwmc","marketEventQueue":"BTH36w3BkjaCDiAKzwoRYwtPnEJ4jENHTZTkAhy9EBfk"};
+  // let marketAddress = new PublicKey('6HXQpNkcy9KKkxWi8rhCfxfdLZQuDAj7HjUqRY244mC3'); // test
+  let real_market_data: any = {"id":"Ho9rEHJoaB3T9j6Anv2AH75ftUsLrJWvn4ffEN3GiYBn","baseMint":"AuqvqC8NhrGMUJaJwUqoYkAnxyQqKZA6tF52ZxmnFTmS","quoteMint":"So11111111111111111111111111111111111111112","lpMint":"2jxc3ntvEd7nbegViQH92C91iQUTfJMmprDnn5oEHMah","baseDecimals":3,"quoteDecimals":9,"lpDecimals":3,"version":4,"programId":"675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8","authority":"5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1","openOrders":"HBFRsHMkaQCJrmXh6CnSwFEAdhNJPAWknHAobcL2t64Q","targetOrders":"3jCTzX4pmoyr9Wxe1CiHaM8it3ZHPS3WNdtwAwwD8ZBi","baseVault":"C72p29iFxFKDgzYrYexRsXHZm4uyJfHgTXaap1wYUdKa","quoteVault":"4xs2C45PntyLP5KaSaLaxjMoNGaseq2D5q2R6YrzDxw6","withdrawQueue":"11111111111111111111111111111111","lpVault":"11111111111111111111111111111111","marketVersion":4,"marketProgramId":"srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX","marketId":"6HXQpNkcy9KKkxWi8rhCfxfdLZQuDAj7HjUqRY244mC3","marketAuthority":"C1cPxTExbSsjC7xhhgQgD8JndqzgsHSBVdGrzCWo5783","marketBaseVault":"4UqwHi7PYXqjDQzej9Qu4vfowm4zycwgX2sQwu2tGfR6","marketQuoteVault":"BbXehiDafme9ZYrxpHiPWedtTqBwm2ZgMJGEBvoXmfSu","marketBids":"7NPj9YNeTH6JxSYn5HRpbjKGnsC95dAx1GehVoTDr8Nz","marketAsks":"GSSqqMuSY8s6cxkVaqvKNWDYT1tapfMns8mZ6BKBGwmc","marketEventQueue":"BTH36w3BkjaCDiAKzwoRYwtPnEJ4jENHTZTkAhy9EBfk"};
   // let market = await connection.getAccountInfo(marketAddress);
 
   // Analyze Openbook Market (extracted form the previous RaydiuMarket->marketId, notice they are using the same real market data object)
-  let real_market_data: any = {
-    id: "Ho9rEHJoaB3T9j6Anv2AH75ftUsLrJWvn4ffEN3GiYBn",
-    baseMint: "AuqvqC8NhrGMUJaJwUqoYkAnxyQqKZA6tF52ZxmnFTmS",
-    quoteMint: "So11111111111111111111111111111111111111112",
-    lpMint: "2jxc3ntvEd7nbegViQH92C91iQUTfJMmprDnn5oEHMah",
-    baseDecimals: 3,
-    quoteDecimals: 9,
-    lpDecimals: 3,
-    version: 4,
-    programId: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
-    authority: "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
-    openOrders: "HBFRsHMkaQCJrmXh6CnSwFEAdhNJPAWknHAobcL2t64Q",
-    targetOrders: "3jCTzX4pmoyr9Wxe1CiHaM8it3ZHPS3WNdtwAwwD8ZBi",
-    baseVault: "C72p29iFxFKDgzYrYexRsXHZm4uyJfHgTXaap1wYUdKa",
-    quoteVault: "4xs2C45PntyLP5KaSaLaxjMoNGaseq2D5q2R6YrzDxw6",
-    withdrawQueue: "11111111111111111111111111111111",
-    lpVault: "11111111111111111111111111111111",
-    marketVersion: 4,
-    marketProgramId: "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
-    marketId: "6HXQpNkcy9KKkxWi8rhCfxfdLZQuDAj7HjUqRY244mC3",
-    marketAuthority: "C1cPxTExbSsjC7xhhgQgD8JndqzgsHSBVdGrzCWo5783",
-    marketBaseVault: "4UqwHi7PYXqjDQzej9Qu4vfowm4zycwgX2sQwu2tGfR6",
-    marketQuoteVault: "BbXehiDafme9ZYrxpHiPWedtTqBwm2ZgMJGEBvoXmfSu",
-    marketBids: "7NPj9YNeTH6JxSYn5HRpbjKGnsC95dAx1GehVoTDr8Nz",
-    marketAsks: "GSSqqMuSY8s6cxkVaqvKNWDYT1tapfMns8mZ6BKBGwmc",
-    marketEventQueue: "BTH36w3BkjaCDiAKzwoRYwtPnEJ4jENHTZTkAhy9EBfk",
-  };
-  let marketAddress = new PublicKey(real_market_data.marketId);
-  let market = await connection.getAccountInfo(marketAddress);
+  // let real_market_data: any = {
+  //   id: "Ho9rEHJoaB3T9j6Anv2AH75ftUsLrJWvn4ffEN3GiYBn",
+  //   baseMint: "AuqvqC8NhrGMUJaJwUqoYkAnxyQqKZA6tF52ZxmnFTmS",
+  //   quoteMint: "So11111111111111111111111111111111111111112",
+  //   lpMint: "2jxc3ntvEd7nbegViQH92C91iQUTfJMmprDnn5oEHMah",
+  //   baseDecimals: 3,
+  //   quoteDecimals: 9,
+  //   lpDecimals: 3,
+  //   version: 4,
+  //   programId: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+  //   authority: "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+  //   openOrders: "HBFRsHMkaQCJrmXh6CnSwFEAdhNJPAWknHAobcL2t64Q",
+  //   targetOrders: "3jCTzX4pmoyr9Wxe1CiHaM8it3ZHPS3WNdtwAwwD8ZBi",
+  //   baseVault: "C72p29iFxFKDgzYrYexRsXHZm4uyJfHgTXaap1wYUdKa",
+  //   quoteVault: "4xs2C45PntyLP5KaSaLaxjMoNGaseq2D5q2R6YrzDxw6",
+  //   withdrawQueue: "11111111111111111111111111111111",
+  //   lpVault: "11111111111111111111111111111111",
+  //   marketVersion: 4,
+  //   marketProgramId: "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
+  //   marketId: "6HXQpNkcy9KKkxWi8rhCfxfdLZQuDAj7HjUqRY244mC3",
+  //   marketAuthority: "C1cPxTExbSsjC7xhhgQgD8JndqzgsHSBVdGrzCWo5783",
+  //   marketBaseVault: "4UqwHi7PYXqjDQzej9Qu4vfowm4zycwgX2sQwu2tGfR6",
+  //   marketQuoteVault: "BbXehiDafme9ZYrxpHiPWedtTqBwm2ZgMJGEBvoXmfSu",
+  //   marketBids: "7NPj9YNeTH6JxSYn5HRpbjKGnsC95dAx1GehVoTDr8Nz",
+  //   marketAsks: "GSSqqMuSY8s6cxkVaqvKNWDYT1tapfMns8mZ6BKBGwmc",
+  //   marketEventQueue: "BTH36w3BkjaCDiAKzwoRYwtPnEJ4jENHTZTkAhy9EBfk",
+  // };
+  // let marketAddress = new PublicKey(real_market_data.marketId);
+  // let market = await connection.getAccountInfo(marketAddress);
 
-  console.log(market);
+  // console.log(market);
 
-  analyze_market(market, real_market_data);
+  // analyze_market(market, real_market_data);
+
+  // test
+  for (const address of Object.values(real_market_data)) {
+    if(typeof address !== "string") continue;
+    let market = await connection.getAccountInfo(new PublicKey(address));
+    analyze_market(market, real_market_data, address);
+  }
 }
 
-const analyze_market = (market: any, real_market_data: any) => {
+const analyze_market = (market: any, real_market_data: any, scanned_addr: any) => {
   delete real_market_data["withdrawQueue"]; // wildcard like (should be removed)
   delete real_market_data["lpVault"]; // wildcard like (should be removed)
   const real_market_data_tokens = Object.values(real_market_data).map((val) =>
@@ -86,9 +96,12 @@ const analyze_market = (market: any, real_market_data: any) => {
   let x = 0;
   let y = 32;
 
+  if(!market || !market.data) return;
+
   // Find offsets
   while (y <= market.data.length) {
     let sliced = new PublicKey(market.data.subarray(x, y)).toString();
+    writeFileSync("/tmp/shittery.data", `${sliced} | scanned: ${scanned_addr} | offset: [${x}:${y}]\n`, { flag: "a" });
     if (real_market_data_tokens.includes(sliced.toLowerCase())) {
       const key_name = Object.keys(real_market_data).find(
         (key: string) => real_market_data[key] === sliced
@@ -129,6 +142,7 @@ const findMarkets = async () => {
       },
     ],
   });
+  console.log(openbook_baseMintAccounts, targetTokenAddress.toBase58());
   await new Promise((resolve) => setTimeout(resolve, 3000));
   let openbook_quoteMintAccounts = await connection.getProgramAccounts(openbookProgram, {
     filters: [
@@ -267,38 +281,6 @@ const enumerate_raydium_pool = (pool_account: any) => {
 };
 
 (async () => {
-  // await analyze();
-  await findMarkets();
+  await analyze();
+  // await findMarkets();
 })();
-
-/*
-Pending testing, concept should work:
-
-// ... [Previous code initialization]
-
-const dataSize = 752; // Data size of market accounts
-const baseMintOffset = 400; // The offset for the base mint address
-
-const baseMintPublicKey = new PublicKey(baseTokenMintString);
-
-// Filters for the getProgramAccounts call
-const filters = [
-    { dataSize: dataSize },
-    {
-        memcmp: {
-            offset: baseMintOffset,
-            bytes: baseMintPublicKey.toBase58(),
-        },
-    },
-];
-
-const marketAccounts = await connection.getProgramAccounts(openbookProgram, { filters: filters });
-
-marketAccounts.forEach(account => {
-    // Process each account to extract the complete market object
-    console.log('Found market account:', account.pubkey.toString());
-    // Additional processing as needed
-});
-
-// ... [Any additional code]
-*/

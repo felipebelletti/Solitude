@@ -4829,11 +4829,15 @@ dependencies = [
 name = "solitude"
 version = "0.1.0"
 dependencies = [
+ "base64 0.21.5",
  "bincode",
+ "bs58 0.5.0",
  "bytes",
  "futures",
  "futures-util",
+ "hex",
  "jito-protos",
+ "lazy_static",
  "log",
  "prost-types 0.11.9",
  "rand 0.8.5",
@@ -4842,6 +4846,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "solana-account-decoder",
  "solana-client",
  "solana-metrics",
  "solana-perf",
