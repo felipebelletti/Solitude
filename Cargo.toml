@@ -39,4 +39,9 @@ spl-memo = "4.0.0"
 spl-associated-token-account = "2.2.0"
 spl-token = "4.0.0"
 raydium-contract-instructions = { git = "https://github.com/raydium-io/raydium-contract-instructions", version = "0.1.0" }
+lazy_static = "1.4.0"
+base64 = "0.21.5"
+bs58 = "0.5.0"
+solana-account-decoder = "1.10.20"
+hex = "0.4.3"
 

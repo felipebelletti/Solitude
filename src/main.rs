@@ -1,15 +1,17 @@
 mod jito;
 mod local_api;
 mod openserum_api;
-mod raydium_api;
+mod raydium;
+mod utils;
 
 use jito::{
     client_interceptor::ClientInterceptor, cluster_data_impl::ClusterDataImpl, grpc_connect,
     BundleId, SearcherClient, SearcherClientError, SearcherClientResult,
 };
 use jito_protos::{
-    auth::auth_service_client::AuthServiceClient, bundle::Bundle,
-    searcher::searcher_service_client::SearcherServiceClient,
+    auth::auth_service_client::AuthServiceClient,
+    bundle::Bundle,
+    searcher::{self, searcher_service_client::SearcherServiceClient},
 };
 use rand::{
     distributions::{Alphanumeric, DistString},
@@ -21,7 +23,7 @@ use raydium_contract_instructions::{
     stable_instruction::{swap_base_in as stable_swap, ID as stableProgramID},
 };
 use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
-use solana_program::{instruction::Instruction, system_instruction};
+use solana_program::{instruction::{Instruction, CompiledInstruction}, system_instruction};
 use solana_sdk::{
     bs58,
     commitment_config::{CommitmentConfig, CommitmentLevel},
@@ -38,7 +40,8 @@ use std::{
     error::Error,
     io::{self, Write},
     panic::{self, PanicInfo},
-    process, result,
+    process::{self, exit},
+    result,
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -54,19 +57,12 @@ use tonic::{service::interceptor::InterceptedService, transport::Channel};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // let binding = openserum_api::get_serum_token_data().await?;
-    // let serum_token_data = match binding.first() {
-    //     Some(data) => data,
-    //     None => return Err("No openSerum data found".into()),
-    // };
-
-    // println!("{:?}", serum_token_data);
-
     let main_keypair = Arc::new(Keypair::from_bytes(&bs58::decode(
         "2zS4DvSbA6PdK4aokzG7dSbSMPvD93vb8gvH2J1Rg2RnSxXZddw7nksvfVi2F1BqGJufZjzk13tT3eiL8WM34EMP",
     )
     .into_vec()
     .unwrap()).unwrap());
+    let main_keypair_address = main_keypair.pubkey();
     println!("Main keypair: {:?}", main_keypair.pubkey());
 
     let jito_auth_keypair = Arc::new(
@@ -79,8 +75,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let block_engine_url = "https://frankfurt.mainnet.block-engine.jito.wtf";
-    // let rpc_pubsub_addr = "http://127.0.0.1:8899/"; // CHANGE TO http://127.0.0.1:8899/
-    let rpc_pubsub_addr = "https://api.mainnet-beta.solana.com/";
+    let rpc_pubsub_addr = "http://127.0.0.1:8899/"; // CHANGE TO http://127.0.0.1:8899/
+    // let rpc_pubsub_addr = "https://api.mainnet-beta.solana.com/";
+    let rpc_pda_url = "https://tame-ancient-mountain.solana-mainnet.quiknode.pro/6a9a95bf7bbb108aea620e7ee4c1fd5e1b67cc62";
 
     let (mut searcher_client, _) = jito::get_searcher_client(
         &jito_auth_keypair,
@@ -90,241 +87,163 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )
     .await
     .expect("get_searcher_client failed");
-    let rpc_client = RpcClient::new(rpc_pubsub_addr.to_string());
+    let searcher_client = Arc::new(searcher_client);
 
-    let mut rng = thread_rng();
+    let rpc_client = Arc::new(RpcClient::new(rpc_pubsub_addr.to_string()));
+    let rpc_pda_client = Arc::new(RpcClient::new(rpc_pda_url.to_string()));
+
     let tip_program_pubkey: Pubkey = "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"
         .parse()
         .unwrap();
     let tip_accounts = generate_tip_accounts(&tip_program_pubkey);
-    let tip_account = tip_accounts[rng.gen_range(0..tip_accounts.len())];
+    let tip_account = tip_accounts[thread_rng().gen_range(0..tip_accounts.len())];
 
-    println!("Enter target address: ");
-    let target_addr = read_pubkey_from_stdin().unwrap();
-    // let paired_addr: Pubkey = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".parse().unwrap(); // USDT
+    // println!("Enter target address: ");
+    // let target_addr = read_pubkey_from_stdin().unwrap();
+    let target_addr = Pubkey::from_str("AuqvqC8NhrGMUJaJwUqoYkAnxyQqKZA6tF52ZxmnFTmS")?;
     let paired_addr: Pubkey = "So11111111111111111111111111111111111111112"
         .parse()
-        .unwrap(); // SOL
-                   // let target_addr: Pubkey = "BdKpATfRZLDVEKiAgq2FggSESTdu3CjHbAqpYcca6rJH"
-                   //     .parse()
-                   //     .unwrap();
-    let watch_mempool_addresses: Vec<Pubkey> = vec![target_addr];
+        .unwrap();
+    let watch_mempool_addresses: Vec<Pubkey> = vec![
+        target_addr, Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?
+    ];
 
-    // let binding = raydium_api::get_pool_by_target(&target_addr.to_string()).await?;
-    // let crafted_swap_data = match binding.first() {
-    //     Some(data) => data,
-    //     None => return Err("No Raydium data found".into()),
-    // };
-    let crafted_swap_data = local_api::get_raydium_crafted_swap(
-        target_addr.to_string(),
-        target_addr.to_string(),
-        target_addr.to_string(),
-        true,
+    let (market_account_pubkey, market_account) =
+        raydium::market::exhaustive_get_openbook_market_for_address(&target_addr, &rpc_pda_client)
+            .await?;
+    let (raydium_pool_addr, raydium_pool_account) =
+        raydium::market::exhaustive_get_raydium_pool_for_address(&target_addr, &rpc_pda_client)
+            .await?;
+    let parsed_market_account = raydium::market::parse_openbook_market_account(market_account);
+    let parsed_raydium_pool_account =
+        raydium::market::parse_raydium_pool_account(raydium_pool_account);
+
+    let pool_key = raydium::market::craft_pool_key(
+        &rpc_pda_client,
+        &parsed_market_account,
+        &parsed_raydium_pool_account,
+        &raydium_pool_addr,
     )
     .await?;
 
-    let user_target_token_account =
-        get_associated_token_address(&main_keypair.pubkey(), &target_addr);
-
-    let mut instr_chain: Vec<Instruction> = vec![];
-    let buy_amount = 0.001;
-
-    let lamports_rent_exception = rpc_client
-        .get_minimum_balance_for_rent_exemption(165)
-        .await?;
-    let seed = Alphanumeric.sample_string(&mut rand::thread_rng(), 32);
-    let created_user_paired_account =
-        &Pubkey::create_with_seed(&main_keypair.pubkey(), &seed, &spl_token::id())?;
-    // #1
-    let create_user_paired_account_instr = system_instruction::create_account_with_seed(
-        &main_keypair.pubkey(),                                // source
-        created_user_paired_account,                           // newAccount
-        &main_keypair.pubkey(),                                // base
-        &seed,                                                 // seed
-        lamports_rent_exception + sol_to_lamports(buy_amount), // Lamports
-        165,                                                   // Space
-        &spl_token::id(),                                      // Owner
-    );
-    instr_chain.push(create_user_paired_account_instr);
-
-    // #2
-    let initialize_user_paired_account_instr = spl_token::instruction::initialize_account(
-        &spl_token::id(),            // Token Program
-        created_user_paired_account, // TokenAddress
-        &paired_addr,                // InitAcount
-        &main_keypair.pubkey(),      // Owner
-    )?;
-    instr_chain.push(initialize_user_paired_account_instr);
-
-    let associated_account_exists: bool =
-        match rpc_client.get_account(&user_target_token_account).await {
-            Ok(account) => /* is_initialized_account(&account.data)*/ !account.data.is_empty(),
-            Err(_) => false,
-        };
-
-    if !associated_account_exists
-    {
-        println!("Creating associated account");
-        // 3
-        let create_associated_account_instr =
-            spl_associated_token_account::instruction::create_associated_token_account(
-                &main_keypair.pubkey(),
-                &main_keypair.pubkey(),
-                &target_addr,
-                &spl_token::id(),
-            );
-        instr_chain.push(create_associated_account_instr);
-        println!(
-            "0: {}, 1: {}, 2: {}, 3: {}",
-            &main_keypair.pubkey(),
-            &user_target_token_account,
-            &target_addr,
-            &spl_token::id()
-        );
-    };
-
-    let swap_instr = amm_swap(
-        &ammProgramID,
-        &Pubkey::from_str(&crafted_swap_data.id)?,
-        &Pubkey::from_str(&crafted_swap_data.authority)?,
-        &Pubkey::from_str(&crafted_swap_data.open_orders)?,
-        &Pubkey::from_str(&crafted_swap_data.target_orders)?,
-        &Pubkey::from_str(&crafted_swap_data.base_vault)?,
-        &Pubkey::from_str(&crafted_swap_data.quote_vault)?,
-        &Pubkey::from_str(&crafted_swap_data.market_program_id)?,
-        &Pubkey::from_str(&crafted_swap_data.market_id)?,
-        &Pubkey::from_str(&crafted_swap_data.market_bids)?,
-        &Pubkey::from_str(&crafted_swap_data.market_asks)?,
-        &Pubkey::from_str(&crafted_swap_data.market_event_queue)?,
-        &Pubkey::from_str(&crafted_swap_data.market_base_vault)?,
-        &Pubkey::from_str(&crafted_swap_data.market_quote_vault)?,
-        &Pubkey::from_str(&crafted_swap_data.market_authority)?,
-        &created_user_paired_account,
-        &user_target_token_account,
-        &main_keypair.pubkey(),
-        sol_to_lamports(buy_amount),
-        1,
+    let sol_amount = 0.01;
+    let swap_instr = raydium::get_swap_in_instr(
+        &rpc_client,
+        &main_keypair,
+        &pool_key,
+        &paired_addr,
+        &target_addr,
+        sol_amount,
     )
-    .expect("amm_swap failed");
-    instr_chain.push(swap_instr);
+    .await?;
 
-    let close_user_paired_account_instr = spl_token::instruction::close_account(
-        &spl_token::id(),            // Token Program
-        created_user_paired_account, // Account
-        &main_keypair.pubkey(),      // Destination
-        &main_keypair.pubkey(),      // Owner
-        &[],                         // MultiSigners
-    )
-    .expect("close_account failed");
-    // instr_chain.push(close_user_paired_account_instr);
+    // let blockhash = rpc_client
+    //     .get_latest_blockhash_with_commitment(CommitmentConfig {
+    //         commitment: CommitmentLevel::Finalized,
+    //     })
+    //     .await?
+    //     .0;
+    // let txn = VersionedTransaction::from(Transaction::new_signed_with_payer(
+    //     &instr_chain,
+    //     Some(&main_keypair.pubkey()),
+    //     &[main_keypair.as_ref()],
+    //     blockhash,
+    // ));
 
-    instr_chain.push(transfer(
-        &main_keypair.pubkey(),
-        &tip_account,
-        sol_to_lamports(0.04),
-    ));
-
-    let blockhash = rpc_client
-        .get_latest_blockhash_with_commitment(CommitmentConfig {
-            commitment: CommitmentLevel::Finalized,
-        })
-        .await?
-        .0;
-    let txn = VersionedTransaction::from(Transaction::new_signed_with_payer(
-        &instr_chain,
-        Some(&main_keypair.pubkey()),
-        &[main_keypair.as_ref()],
-        blockhash,
-    ));
-
-    // let mut interval = time::interval(Duration::from_millis(300));
-
-    loop {
-        let bundle_id = searcher_client
-            .send_bundle(vec![txn.clone()], 3)
-            .await
-            .expect("send_bundle failed");
-        println!("Bundle ID: {:?}", bundle_id);
-    }
+    // let mut interval = tokio::time::interval(Duration::from_millis(240));
 
     // loop {
-    //     let signature = rpc_client
-    //         .send_and_confirm_transaction_with_spinner_and_config(
-    //             &txn,
-    //             CommitmentConfig::confirmed(),
-    //             RpcSendTransactionConfig {
-    //                 skip_preflight: true,
-    //                 ..RpcSendTransactionConfig::default()
-    //             },
-    //         )
-    //         .await?;
-    //     println!("Tx Signature/Hash: {:?}", signature);
-    // }
+    //     interval.tick().await;
 
-    // let mut mempool_ch = searcher_client
-    //     .subscribe_mempool_programs(
-    //         &watch_mempool_addresses,
-    //         vec![
-    //             "amsterdam".to_string(),
-    //             "frankfurt".to_string(),
-    //             "ny".to_string(),
-    //             "tokyo".to_string(),
-    //         ],
-    //         100,
-    //     )
-    //     .await?;
+    //     let client_clone = searcher_client.clone();
+    //     let txn_clone = txn.clone();
 
-    // println!("Listening for pending txs...");
-
-    // let id = searcher_client.send_bundle(vec![backrun_tx], 4).await.unwrap();
-    // println!("Bundle ID: {:?}", id);
-
-    // let mut fire = true;
-    // while let Some(txs) = mempool_ch.recv().await {
-    //     for mempool_tx in txs {
-    //         if fire == false {
-    //             continue;
+    //     tokio::spawn(async move {
+    //         match client_clone.send_bundle(vec![txn_clone], 3).await {
+    //             Ok(bundle_id) => {
+    //                 println!("Bundle ID: {:?}", bundle_id);
+    //             }
+    //             Err(e) => {
+    //                 eprintln!("Error sending bundle: {:?}", e);
+    //             }
     //         }
-
-    //         println!("Received transaction: {:?}", mempool_tx.signatures[0]);
-
-    //         let blockhash = rpc_client
-    //             .get_latest_blockhash_with_commitment(CommitmentConfig {
-    //                 commitment: CommitmentLevel::Confirmed,
-    //             })
-    //             .await?
-    //             .0;
-
-    //         let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-    //             &[
-    //                 build_memo(
-    //                     format!("kpn: {:?}", mempool_tx.signatures[0].to_string()).as_bytes(),
-    //                     &[],
-    //                 ),
-    //                 transfer(&main_keypair.pubkey(), &tip_account, sol_to_lamports(0.04)),
-    //                 swap_instruction.clone(),
-    //             ],
-    //             Some(&main_keypair.pubkey()),
-    //             &[main_keypair.as_ref()],
-    //             blockhash,
-    //         ));
-
-    //         let txs: Vec<VersionedTransaction> = vec![mempool_tx, backrun_tx];
-
-    //         let bundle_id = match searcher_client
-    //             .send_bundle(txs, 3)
-    //             .await {
-    //                 Ok(bundle_id) => bundle_id,
-    //                 Err(e) => {
-    //                     println!("SendBundle Err: {:?}", e);
-    //                     continue;
-    //                 }
-    //             };
-    //         println!("Bundle ID: {:?}", bundle_id);
-    //         // fire = false;
-    //     }
+    //     });
     // }
-    println!("Channel closed");
+
+    let mut mempool_ch = searcher_client
+        .subscribe_mempool_programs(
+            &watch_mempool_addresses,
+            vec![
+                "amsterdam".to_string(),
+                "frankfurt".to_string(),
+                "ny".to_string(),
+                "tokyo".to_string(),
+            ],
+            100,
+        )
+        .await?;
+
+    println!("Listenning...");
+
+    while let Some(txs) = mempool_ch.recv().await {
+        for mempool_tx in txs {
+            let rpc_client_clone = rpc_client.clone();
+
+            tokio::spawn(async move {
+                let sig = mempool_tx.signatures[0];
+                let signers = mempool_tx.message.static_account_keys();
+                let caller = signers[0];
+                let instr_chain = mempool_tx.message.instructions();
+
+                if caller != main_keypair_address {
+                    return;
+                }
+
+                pretty_print_instructions(instr_chain);
+
+                let blockhash  = rpc_client_clone
+                    .get_latest_blockhash_with_commitment(CommitmentConfig {
+                        commitment: CommitmentLevel::Confirmed,
+                    })
+                    .await.unwrap()
+                    .0;
+
+                // let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+                //     &swap_instr,
+                //     Some(&main_keypair.pubkey()),
+                //     &[main_keypair.as_ref()],
+                //     blockhash.clone(),
+                // ));
+
+                // let backrun_bribe_tx = 
+            });
+
+            // let blockhash = rpc_client
+            //     .get_latest_blockhash_with_commitment(CommitmentConfig {
+            //         commitment: CommitmentLevel::Confirmed,
+            //     })
+            //     .await?
+            //     .0;
+
+            // let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+            //     &instr_chain,
+            //     Some(&main_keypair.pubkey()),
+            //     &[main_keypair.as_ref()],
+            //     blockhash,
+            // ));
+
+            // let txs: Vec<VersionedTransaction> = vec![mempool_tx, backrun_tx];
+
+            // let bundle_id = match searcher_client.send_bundle(txs, 3).await {
+            //     Ok(bundle_id) => bundle_id,
+            //     Err(e) => {
+            //         println!("SendBundle Err: {:?}", e);
+            //         continue;
+            //     }
+            // };
+            // println!("Bundle ID: {:?}", bundle_id);
+        }
+    }
 
     Ok(())
 }
@@ -377,4 +296,20 @@ fn generate_tip_accounts(tip_program_pubkey: &Pubkey) -> Vec<Pubkey> {
     vec![
         tip_pda_0, tip_pda_1, tip_pda_2, tip_pda_3, tip_pda_4, tip_pda_5, tip_pda_6, tip_pda_7,
     ]
+}
+
+fn pretty_print_instructions(instructions: &[CompiledInstruction]) {
+    println!("{:?}", instructions);
+    for (i, instruction) in instructions.iter().enumerate() {
+        println!("Instruction {}", i + 1);
+        println!("  Program ID Index: {}", instruction.program_id_index);
+        
+        println!("  Account Indexes:");
+        for account_index in &instruction.accounts {
+            println!("    {}", account_index);
+        }
+        
+        println!("  Data (Hex): {:?}", hex::encode(&instruction.data));
+        println!();
+    }
 }
