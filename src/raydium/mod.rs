@@ -73,13 +73,6 @@ pub async fn get_swap_in_instr(rpc_client: &RpcClient, signer_keypair: &Keypair,
                 &spl_token::id(),
             );
         instr_chain.push(create_associated_account_instr);
-        println!(
-            "0: {}, 1: {}, 2: {}, 3: {}",
-            &signer_keypair.pubkey(),
-            &user_target_token_account,
-            &token_addr,
-            &spl_token::id()
-        );
     };
 
     let swap_instr = raydium_contract_instructions::amm_instruction::swap_base_in(
