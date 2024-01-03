@@ -10,7 +10,7 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use std::error::Error;
 use std::str::FromStr;
-use std::convert::TryInto;
+use chrono::Local;
 
 use super::public_api::Pool;
 use crate::utils::get_token_decimals;
@@ -88,7 +88,7 @@ pub async fn exhaustive_get_openbook_market_for_address(target_token_address: &P
         match get_openbook_market_for_address(target_token_address, client).await {
             Ok(market) => return Ok(market),
             Err(_) => {
-                println!("No market found for token, trying again in 300ms");
+                println!("{} | No market found for token, trying again in 300ms", Local::now().format("%H:%M:%S"));
                 std::thread::sleep(std::time::Duration::from_micros(300));
             },
         };
@@ -100,7 +100,7 @@ pub async fn exhaustive_get_raydium_pool_for_address(target_token_address: &Pubk
         match get_raydium_pool_for_address(target_token_address, client).await {
             Ok(market) => return Ok(market),
             Err(_) => {
-                println!("No raydium pool found for token, trying again in 300ms");
+                println!("{} | No raydium pool found for token, trying again in 300ms", Local::now().format("%H:%M:%S"));
                 std::thread::sleep(std::time::Duration::from_micros(300));
             },
         };

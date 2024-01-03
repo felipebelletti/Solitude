@@ -19,6 +19,7 @@ solana-sdk = "~1.16.1"
 solana-perf = "~1.16.1"
 solana-metrics = "~1.16.1"
 solana-client = "~1.16.1"
+solana-transaction-status = "~1.16.1"
 #solana-client = { git = "https://github.com/jito-foundation/jito-solana.git", tag = "v1.14.27-jito" }
 #solana-metrics = { git = "https://github.com/jito-foundation/jito-solana.git", tag = "v1.14.27-jito" }
 #solana-perf = { git = "https://github.com/jito-foundation/jito-solana.git", tag = "v1.14.27-jito" }
@@ -44,4 +45,5 @@ base64 = "0.21.5"
 bs58 = "0.5.0"
 solana-account-decoder = "1.10.20"
 hex = "0.4.3"
+chrono = "0.4.31"
 

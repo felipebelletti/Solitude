@@ -1,3 +1,4 @@
+mod config;
 mod jito;
 mod local_api;
 mod openserum_api;
@@ -23,16 +24,20 @@ use raydium_contract_instructions::{
     stable_instruction::{swap_base_in as stable_swap, ID as stableProgramID},
 };
 use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
-use solana_program::{instruction::{Instruction, CompiledInstruction}, system_instruction};
+use solana_program::{
+    instruction::{CompiledInstruction, Instruction},
+    system_instruction, program_option::COption,
+};
 use solana_sdk::{
     bs58,
     commitment_config::{CommitmentConfig, CommitmentLevel},
     native_token::sol_to_lamports,
     pubkey::Pubkey,
-    signature::{Keypair, Signer},
+    signature::{Keypair, Signature, Signer},
     system_instruction::transfer,
     transaction::{Transaction, VersionedTransaction},
 };
+use solana_transaction_status::UiTransactionEncoding;
 use spl_associated_token_account::get_associated_token_address;
 use spl_memo::build_memo;
 use spl_token::state::is_initialized_account;
@@ -51,18 +56,18 @@ use std::{
 };
 use tonic::{service::interceptor::InterceptedService, transport::Channel};
 
+use crate::utils::get_token_authority;
+
 // use spl_associated_token_account::{
 //     get_associated_token_address, get_associated_token_address_with_program_id,
 // };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let main_keypair = Arc::new(Keypair::from_bytes(&bs58::decode(
-        "2zS4DvSbA6PdK4aokzG7dSbSMPvD93vb8gvH2J1Rg2RnSxXZddw7nksvfVi2F1BqGJufZjzk13tT3eiL8WM34EMP",
-    )
-    .into_vec()
-    .unwrap()).unwrap());
-    let main_keypair_address = main_keypair.pubkey();
+    let wallet = config::wallet::read_from_wallet_file();
+
+    let main_keypair =
+        Arc::new(Keypair::from_bytes(&bs58::decode(&wallet.pk).into_vec().unwrap()).unwrap());
     println!("Main keypair: {:?}", main_keypair.pubkey());
 
     let jito_auth_keypair = Arc::new(
@@ -75,8 +80,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let block_engine_url = "https://frankfurt.mainnet.block-engine.jito.wtf";
-    let rpc_pubsub_addr = "http://127.0.0.1:8899/"; // CHANGE TO http://127.0.0.1:8899/
-    // let rpc_pubsub_addr = "https://api.mainnet-beta.solana.com/";
+    let rpc_pubsub_addr = "http://127.0.0.1:8899/";
     let rpc_pda_url = "https://tame-ancient-mountain.solana-mainnet.quiknode.pro/6a9a95bf7bbb108aea620e7ee4c1fd5e1b67cc62";
 
     let (mut searcher_client, _) = jito::get_searcher_client(
@@ -98,15 +102,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let tip_accounts = generate_tip_accounts(&tip_program_pubkey);
     let tip_account = tip_accounts[thread_rng().gen_range(0..tip_accounts.len())];
 
-    // println!("Enter target address: ");
-    // let target_addr = read_pubkey_from_stdin().unwrap();
-    let target_addr = Pubkey::from_str("AuqvqC8NhrGMUJaJwUqoYkAnxyQqKZA6tF52ZxmnFTmS")?;
-    let paired_addr: Pubkey = "So11111111111111111111111111111111111111112"
-        .parse()
-        .unwrap();
-    let watch_mempool_addresses: Vec<Pubkey> = vec![
-        target_addr, Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?
-    ];
+    println!("Enter target address: ");
+    let target_addr = read_pubkey_from_stdin().unwrap();
+    // let target_addr = Pubkey::from_str("AuqvqC8NhrGMUJaJwUqoYkAnxyQqKZA6tF52ZxmnFTmS")?;
 
     let (market_account_pubkey, market_account) =
         raydium::market::exhaustive_get_openbook_market_for_address(&target_addr, &rpc_pda_client)
@@ -126,49 +124,47 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )
     .await?;
 
-    let sol_amount = 0.01;
+    let paired_addr = {
+        if pool_key.base_mint == target_addr {
+            pool_key.quote_mint
+        } else {
+            pool_key.base_mint
+        }
+    };
+    let buy_amount = wallet
+        .amounts
+        .get(&paired_addr.to_string())
+        .unwrap_or_else(|| {
+            panic!(
+                "No amount specified in wallet.json for paired addr \"{}\"",
+                &paired_addr.to_string()
+            )
+        });
+
+    println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
+
     let swap_instr = raydium::get_swap_in_instr(
         &rpc_client,
         &main_keypair,
         &pool_key,
         &paired_addr,
         &target_addr,
-        sol_amount,
+        buy_amount.clone(),
     )
     .await?;
 
-    // let blockhash = rpc_client
-    //     .get_latest_blockhash_with_commitment(CommitmentConfig {
-    //         commitment: CommitmentLevel::Finalized,
-    //     })
-    //     .await?
-    //     .0;
-    // let txn = VersionedTransaction::from(Transaction::new_signed_with_payer(
-    //     &instr_chain,
-    //     Some(&main_keypair.pubkey()),
-    //     &[main_keypair.as_ref()],
-    //     blockhash,
-    // ));
-
-    // let mut interval = tokio::time::interval(Duration::from_millis(240));
-
-    // loop {
-    //     interval.tick().await;
-
-    //     let client_clone = searcher_client.clone();
-    //     let txn_clone = txn.clone();
-
-    //     tokio::spawn(async move {
-    //         match client_clone.send_bundle(vec![txn_clone], 3).await {
-    //             Ok(bundle_id) => {
-    //                 println!("Bundle ID: {:?}", bundle_id);
-    //             }
-    //             Err(e) => {
-    //                 eprintln!("Error sending bundle: {:?}", e);
-    //             }
-    //         }
-    //     });
-    // }
+    let dev_wallet_addr = match get_token_authority(rpc_pda_client.as_ref(), &target_addr).await? {
+        COption::Some(w) => w,
+        COption::None => {
+            read_pubkey_from_stdin()?
+        }
+    };
+    println!("Dev wallet address: {}", &dev_wallet_addr);
+    
+    let watch_mempool_addresses: Vec<Pubkey> = vec![
+        // target_addr,
+        Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?,
+    ];
 
     let mut mempool_ch = searcher_client
         .subscribe_mempool_programs(
@@ -188,60 +184,60 @@ async fn main() -> Result<(), Box<dyn Error>> {
     while let Some(txs) = mempool_ch.recv().await {
         for mempool_tx in txs {
             let rpc_client_clone = rpc_client.clone();
+            let swap_instr_clone = swap_instr.clone();
+            let main_keypair_clone = main_keypair.clone();
+            let searcher_client_clone = searcher_client.clone();
 
             tokio::spawn(async move {
                 let sig = mempool_tx.signatures[0];
-                let signers = mempool_tx.message.static_account_keys();
-                let caller = signers[0];
-                let instr_chain = mempool_tx.message.instructions();
+                let caller = mempool_tx.message.static_account_keys()[0];
 
-                if caller != main_keypair_address {
+                if caller != dev_wallet_addr {
                     return;
                 }
 
-                pretty_print_instructions(instr_chain);
+                println!("{}", sig);
 
-                let blockhash  = rpc_client_clone
+                let blockhash = rpc_client_clone
                     .get_latest_blockhash_with_commitment(CommitmentConfig {
                         commitment: CommitmentLevel::Confirmed,
                     })
-                    .await.unwrap()
+                    .await
+                    .unwrap()
                     .0;
 
-                // let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-                //     &swap_instr,
-                //     Some(&main_keypair.pubkey()),
-                //     &[main_keypair.as_ref()],
-                //     blockhash.clone(),
-                // ));
+                let backrun_swap_tx =
+                    VersionedTransaction::from(Transaction::new_signed_with_payer(
+                        &swap_instr_clone,
+                        Some(&main_keypair_clone.pubkey()),
+                        &[main_keypair_clone.as_ref()],
+                        blockhash.clone(),
+                    ));
 
-                // let backrun_bribe_tx = 
+                let backrun_bribe_tx =
+                    VersionedTransaction::from(Transaction::new_signed_with_payer(
+                        &[transfer(
+                            &main_keypair_clone.pubkey(),
+                            &tip_account,
+                            sol_to_lamports(wallet.bribe_amount),
+                        )],
+                        Some(&main_keypair_clone.pubkey()),
+                        &[main_keypair_clone.as_ref()],
+                        blockhash.clone(),
+                    ));
+
+                let bundle_txs: Vec<VersionedTransaction> =
+                    vec![mempool_tx, backrun_swap_tx, backrun_bribe_tx];
+
+                let bundle_id = match searcher_client_clone.send_bundle(bundle_txs, 3).await {
+                    Ok(bundle_id) => bundle_id,
+                    Err(e) => {
+                        println!("SendBundle Err: {:?}", e);
+                        return;
+                    }
+                };
+                println!("Bundle ID: {:?}", bundle_id);
             });
-
-            // let blockhash = rpc_client
-            //     .get_latest_blockhash_with_commitment(CommitmentConfig {
-            //         commitment: CommitmentLevel::Confirmed,
-            //     })
-            //     .await?
-            //     .0;
-
-            // let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-            //     &instr_chain,
-            //     Some(&main_keypair.pubkey()),
-            //     &[main_keypair.as_ref()],
-            //     blockhash,
-            // ));
-
-            // let txs: Vec<VersionedTransaction> = vec![mempool_tx, backrun_tx];
-
-            // let bundle_id = match searcher_client.send_bundle(txs, 3).await {
-            //     Ok(bundle_id) => bundle_id,
-            //     Err(e) => {
-            //         println!("SendBundle Err: {:?}", e);
-            //         continue;
-            //     }
-            // };
-            // println!("Bundle ID: {:?}", bundle_id);
         }
     }
 
@@ -303,12 +299,12 @@ fn pretty_print_instructions(instructions: &[CompiledInstruction]) {
     for (i, instruction) in instructions.iter().enumerate() {
         println!("Instruction {}", i + 1);
         println!("  Program ID Index: {}", instruction.program_id_index);
-        
+
         println!("  Account Indexes:");
         for account_index in &instruction.accounts {
             println!("    {}", account_index);
         }
-        
+
         println!("  Data (Hex): {:?}", hex::encode(&instruction.data));
         println!();
     }
