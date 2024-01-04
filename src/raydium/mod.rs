@@ -18,6 +18,7 @@ use self::market::PoolKey;
 
 pub mod public_api;
 pub mod market;
+mod utils;
 
 pub async fn get_swap_in_instr(rpc_client: &RpcClient, signer_keypair: &Keypair, pool_key: &PoolKey, paired_addr: &Pubkey, token_addr: &Pubkey, sol_amount: f64) -> Result<Vec<Instruction>, Box<dyn Error>> {
     let user_target_token_account =
