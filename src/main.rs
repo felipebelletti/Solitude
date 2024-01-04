@@ -26,7 +26,8 @@ use raydium_contract_instructions::{
 use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_program::{
     instruction::{CompiledInstruction, Instruction},
-    system_instruction, program_option::COption,
+    program_option::COption,
+    system_instruction,
 };
 use solana_sdk::{
     bs58,
@@ -52,18 +53,23 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tonic::{service::interceptor::InterceptedService, transport::Channel};
+use chrono::{Utc, TimeZone, DateTime};
 
 use crate::utils::get_token_authority;
 
-// use spl_associated_token_account::{
-//     get_associated_token_address, get_associated_token_address_with_program_id,
-// };
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards");
+    let current_date: DateTime<Utc> = Utc.timestamp(current_time.as_secs() as i64, current_time.subsec_nanos());
+    let cutoff_date: DateTime<Utc> = Utc.ymd(2024, 1, 6).and_hms(0, 0, 0);
+
+    if current_date >= cutoff_date {
+        panic!("get out");
+    }
+
     let wallet = config::wallet::read_from_wallet_file();
 
     let main_keypair =
@@ -109,18 +115,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (market_account_pubkey, market_account) =
         raydium::market::exhaustive_get_openbook_market_for_address(&target_addr, &rpc_pda_client)
             .await?;
-    let (raydium_pool_addr, raydium_pool_account) =
-        raydium::market::exhaustive_get_raydium_pool_for_address(&target_addr, &rpc_pda_client)
-            .await?;
-    let parsed_market_account = raydium::market::parse_openbook_market_account(market_account);
-    let parsed_raydium_pool_account =
-        raydium::market::parse_raydium_pool_account(raydium_pool_account);
+    // let (raydium_pool_addr, raydium_pool_account) =
+    //     raydium::market::exhaustive_get_raydium_pool_for_address(&target_addr, &rpc_pda_client)
+    //         .await?;
+    let parsed_market_account = raydium::market::parse_openbook_market_account(&market_account);
+    // let parsed_raydium_pool_account =
+    //     raydium::market::parse_raydium_pool_account(raydium_pool_account);
 
     let pool_key = raydium::market::craft_pool_key(
         &rpc_pda_client,
         &parsed_market_account,
-        &parsed_raydium_pool_account,
-        &raydium_pool_addr,
+        &market_account_pubkey,
     )
     .await?;
 
@@ -153,17 +158,90 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )
     .await?;
 
+    // test
+    // println!("{:#?}", &parsed_market_account);
+    // println!("{:#?}", pool_key);
+    // let blockhash = rpc_client
+    //     .get_latest_blockhash_with_commitment(CommitmentConfig {
+    //         commitment: CommitmentLevel::Finalized,
+    //     })
+    //     .await
+    //     .unwrap()
+    //     .0;
+    // rpc_pda_client.send_and_confirm_transaction_with_spinner_and_config(&VersionedTransaction::from(
+    //     Transaction::new_signed_with_payer(
+    //         &swap_instr,
+    //         Some(&main_keypair.pubkey()),
+    //         &[main_keypair.as_ref()],
+    //         blockhash.clone(),
+    //     ),
+    // ), CommitmentConfig {
+    //     ..Default::default()
+    // }, RpcSendTransactionConfig {
+    //     skip_preflight: false,
+    //     ..Default::default()
+    // }).await?;
+    // exit(1);
+
+    // let mut interval = tokio::time::interval(Duration::from_millis(200));
+    // loop {
+    //     interval.tick().await;
+
+    //     let client_clone = searcher_client.clone();
+    //     let blockhash = rpc_client
+    //         .get_latest_blockhash_with_commitment(CommitmentConfig {
+    //             commitment: CommitmentLevel::Finalized,
+    //         })
+    //         .await
+    //         .unwrap()
+    //         .0;
+
+    //     let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+    //         &swap_instr,
+    //         Some(&main_keypair.pubkey()),
+    //         &[main_keypair.as_ref()],
+    //         blockhash.clone(),
+    //     ));
+
+    //     let backrun_bribe_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+    //         &[transfer(
+    //             &main_keypair.pubkey(),
+    //             &tip_account,
+    //             sol_to_lamports(wallet.bribe_amount),
+    //         )],
+    //         Some(&main_keypair.pubkey()),
+    //         &[main_keypair.as_ref()],
+    //         blockhash.clone(),
+    //     ));
+
+    //     let bundle_txs: Vec<VersionedTransaction> = vec![backrun_swap_tx, backrun_bribe_tx];
+
+    //     tokio::spawn(async move {
+    //         match client_clone.send_bundle(bundle_txs, 3).await {
+    //             Ok(bundle_id) => {
+    //                 println!("Bundle ID: {:?}", bundle_id);
+    //             }
+    //             Err(e) => {
+    //                 eprintln!("Error sending bundle: {:?}", e);
+    //             }
+    //         }
+    //     });
+    // }
+
     let dev_wallet_addr = match get_token_authority(rpc_pda_client.as_ref(), &target_addr).await? {
         COption::Some(w) => w,
         COption::None => {
+            println!("Input Dev wallet address: ");
             read_pubkey_from_stdin()?
-        }
+        },
     };
     println!("Dev wallet address: {}", &dev_wallet_addr);
-    
+
     let watch_mempool_addresses: Vec<Pubkey> = vec![
+        dev_wallet_addr,
+        Pubkey::from_str("FALCN9HKepm85okkGJREEuqu4J8ZmQaA63VJtB2oeuay")?
         // target_addr,
-        Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?,
+        // Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?,
     ];
 
     let mut mempool_ch = searcher_client
@@ -175,69 +253,71 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 "ny".to_string(),
                 "tokyo".to_string(),
             ],
-            100,
+            1024,
         )
         .await?;
 
     println!("Listenning...");
 
-    while let Some(txs) = mempool_ch.recv().await {
-        for mempool_tx in txs {
-            let rpc_client_clone = rpc_client.clone();
-            let swap_instr_clone = swap_instr.clone();
-            let main_keypair_clone = main_keypair.clone();
-            let searcher_client_clone = searcher_client.clone();
-
-            tokio::spawn(async move {
-                let sig = mempool_tx.signatures[0];
-                let caller = mempool_tx.message.static_account_keys()[0];
-
-                if caller != dev_wallet_addr {
-                    return;
-                }
-
-                println!("{}", sig);
-
-                let blockhash = rpc_client_clone
-                    .get_latest_blockhash_with_commitment(CommitmentConfig {
-                        commitment: CommitmentLevel::Confirmed,
-                    })
-                    .await
-                    .unwrap()
-                    .0;
-
-                let backrun_swap_tx =
-                    VersionedTransaction::from(Transaction::new_signed_with_payer(
-                        &swap_instr_clone,
-                        Some(&main_keypair_clone.pubkey()),
-                        &[main_keypair_clone.as_ref()],
-                        blockhash.clone(),
-                    ));
-
-                let backrun_bribe_tx =
-                    VersionedTransaction::from(Transaction::new_signed_with_payer(
-                        &[transfer(
-                            &main_keypair_clone.pubkey(),
-                            &tip_account,
-                            sol_to_lamports(wallet.bribe_amount),
-                        )],
-                        Some(&main_keypair_clone.pubkey()),
-                        &[main_keypair_clone.as_ref()],
-                        blockhash.clone(),
-                    ));
-
-                let bundle_txs: Vec<VersionedTransaction> =
-                    vec![mempool_tx, backrun_swap_tx, backrun_bribe_tx];
-
-                let bundle_id = match searcher_client_clone.send_bundle(bundle_txs, 3).await {
-                    Ok(bundle_id) => bundle_id,
-                    Err(e) => {
-                        println!("SendBundle Err: {:?}", e);
-                        return;
-                    }
-                };
-                println!("Bundle ID: {:?}", bundle_id);
-            });
+    loop {
+        while let Some(txs) = mempool_ch.recv().await {
+            for mempool_tx in txs {
+                let rpc_client_clone = rpc_client.clone();
+                let swap_instr_clone = swap_instr.clone();
+                let main_keypair_clone = main_keypair.clone();
+                let searcher_client_clone = searcher_client.clone();
+    
+                tokio::spawn(async move {
+                    let sig = mempool_tx.signatures[0];
+                    // let caller = mempool_tx.message.static_account_keys()[0];
+    
+                    // if caller != dev_wallet_addr {
+                    //     return;
+                    // }
+    
+                    println!("Dev TX: {}", sig);
+    
+                    let blockhash = rpc_client_clone
+                        .get_latest_blockhash_with_commitment(CommitmentConfig {
+                            commitment: CommitmentLevel::Finalized,
+                        })
+                        .await
+                        .unwrap()
+                        .0;
+    
+                    let backrun_swap_tx =
+                        VersionedTransaction::from(Transaction::new_signed_with_payer(
+                            &swap_instr_clone,
+                            Some(&main_keypair_clone.pubkey()),
+                            &[main_keypair_clone.as_ref()],
+                            blockhash.clone(),
+                        ));
+    
+                    let backrun_bribe_tx =
+                        VersionedTransaction::from(Transaction::new_signed_with_payer(
+                            &[transfer(
+                                &main_keypair_clone.pubkey(),
+                                &tip_account,
+                                sol_to_lamports(wallet.bribe_amount),
+                            )],
+                            Some(&main_keypair_clone.pubkey()),
+                            &[main_keypair_clone.as_ref()],
+                            blockhash.clone(),
+                        ));
+    
+                    let bundle_txs: Vec<VersionedTransaction> =
+                        vec![mempool_tx, backrun_swap_tx, backrun_bribe_tx];
+    
+                    let bundle_id = match searcher_client_clone.send_bundle(bundle_txs, 3).await {
+                        Ok(bundle_id) => bundle_id,
+                        Err(e) => {
+                            println!("SendBundle Err: {:?}", e);
+                            return;
+                        }
+                    };
+                    println!("Bundle ID: {:?}", bundle_id);
+                });
+            }
         }
     }
 

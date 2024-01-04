@@ -64,3 +64,6 @@ raydium_pool->baseVault data offsets
 
 openbook_market->market_base_vault data offsets
 - Offset 32 to 64 is C1cPxTExbSsjC7xhhgQgD8JndqzgsHSBVdGrzCWo5783 (marketAuthority)
+
+Extras 2:
+- baseVault (not the marketBaseVault) points to Authority at [32:64]
