@@ -38,6 +38,7 @@ use spl_associated_token_account::get_associated_token_address;
 use spl_memo::build_memo;
 use spl_token::state::is_initialized_account;
 use std::{
+    collections::HashMap,
     error::Error,
     io::{self, Write},
     panic::{self, PanicInfo},
@@ -46,7 +47,7 @@ use std::{
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -98,39 +99,109 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
 
     let methods: Arc<Vec<String>> = Arc::new(vec![
-        "09506ede560cba03010000000000000000".to_string(), // ? swap
-        "0b00bca0650100000000000c3d5d53aa01".to_string(), // ? swap
-        "09acf3f4509e1c00000000000000000000".to_string(), // dragonfly
+        "0950".to_string(), // ? swap
+        "0b00".to_string(), // ? swap
+        "09ac".to_string(), // dragonfly
     ]);
+    let wallet_to_person: Arc<Mutex<HashMap<Pubkey, &str>>> = Arc::new(Mutex::new(HashMap::new()));
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("9mor3nwvFkd1xiAy56jw4hnasZFFkjbKLzdZ1kxSyz77")?,
+        "wep1",
+    );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("BSyAtkb4S36XXs9VDz7xc1KiN4RbuwRdTYJTSAo96mop")?,
+        "wep2",
+    );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("CLT6JrLf2AMx7ju2hQpz7yUhEBziVgAnDVNx8kmJbT67")?,
+        "pipi",
+    );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("MAFYMHwNxpzW3w8cTQnmqfEssgxq3cRsVNrjs6kNkAG")?,
+        "anemone",
+    );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("8bBmx5L4XKfKcc27ry4nQ4uPx4xr31AAei5EXWwatnZ5")?,
+        "balao",
+    );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("CxVb5zuyLsUiKHwtjtKW96YcdF24pJTWoitNXXyVMHcX")?,
+        "snk",
+    );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("4FTvLGKLfrhMechFrRwngC8bKENCGEjutg5xXdzyKkzc")?,
+        "maskot",
+    );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("bjEf4LPBqwGfn8xGfSToy7VUanQeT1EifEwZDopHk9Y")?,
+        "detetive",
+    );
+    let ignore_unknown_callers = true;
+
     loop {
         while let Some(txs) = mempool_ch.recv().await {
             for mempool_tx in txs {
-                let methods_clone = methods.clone();
+                let methods_clone: Arc<Vec<String>> = methods.clone();
+                let wallet_to_person_clone = wallet_to_person.clone();
 
                 tokio::spawn(async move {
-                    let sig = mempool_tx.signatures[0];
-                    let signer = mempool_tx.message.static_account_keys()[0];
+                    let hash = mempool_tx.signatures[0];
+                    let accounts: &[Pubkey] = mempool_tx.message.static_account_keys();
+                    let signer = accounts[0];
                     let instr_chain = mempool_tx.message.instructions();
-
-                    // println!("{} - {}", sig, hex::encode(instr_chain[0].data.clone()));
 
                     for instr in instr_chain {
                         let instr_data_hex = hex::encode(instr.data.clone());
 
-                        if methods_clone.contains(&instr_data_hex) {
-                            println!("SNIPING");
-                            println!("Signature: {}", sig);
-                            println!("Signer: {}", signer);
-                            println!("Instruction data (id. hex): {:?}", instr.data);
-                            println!("Input Accounts: {:?}", instr.accounts);
-                        }
+                        if methods_clone
+                            .iter()
+                            .any(|method| instr_data_hex.starts_with(method))
+                        {
+                            let account_indexes_used = &instr.accounts;
 
-                        if instr_data_hex.starts_with("01fe") {
-                            println!("ADD LIQUITY");
-                            println!("Signature: {}", sig);
-                            println!("Signer: {}", signer);
-                            println!("Instruction data (id. hex): {:?}", instr.data);
-                            println!("Input Accounts: {:?}", instr.accounts);
+                            let swap_grouped_accounts = account_indexes_used
+                                .iter()
+                                .filter_map(|&index| accounts.get(index as usize))
+                                .collect::<Vec<&Pubkey>>();
+
+                            let associated_account_instr: &CompiledInstruction = match instr_chain
+                                .iter()
+                                .find(|&instr| hex::encode(instr.data.clone()) == "00")
+                            {
+                                Some(instr) => instr,
+                                None => {
+                                    println!("Could not get associated_account_instr ({})", hash);
+                                    return;
+                                }
+                            };
+
+                            let target_token_address_index = match associated_account_instr
+                                .accounts
+                                .get(3)
+                            {
+                                Some(value) => value,
+                                None => {
+                                    println!("Could not get target_token_address_index from associated_account_instr");
+                                    return;
+                                }
+                            };
+                            let target_token_address =
+                                accounts[*target_token_address_index as usize];
+
+                            let person = match wallet_to_person_clone.lock().unwrap().get(&signer) {
+                                Some(value) => value,
+                                None => {
+                                    if ignore_unknown_callers {
+                                        return;
+                                    }
+                                    "unknown"
+                                },
+                            };
+                            println!(
+                                "{} is being sniped by {} ({}) | {}",
+                                target_token_address, signer, person, hash
+                            );
+                            // println!("> Sniping activity detected\nSigner: {}\nHash: {}\nTarget: {}\nData: {}\nSwap Input Accounts: {:#?}", signer, hash, target_token_address, instr_data_hex, swap_grouped_accounts);
                         }
                     }
                 });

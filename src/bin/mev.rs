@@ -1,5 +1,4 @@
-
-
+use chrono::{DateTime, TimeZone, Utc};
 use jito::{
     client_interceptor::ClientInterceptor, cluster_data_impl::ClusterDataImpl, grpc_connect,
     BundleId, SearcherClient, SearcherClientError, SearcherClientResult,
@@ -34,7 +33,7 @@ use solana_sdk::{
     transaction::{Transaction, VersionedTransaction},
 };
 use solana_transaction_status::UiTransactionEncoding;
-use solitude::{jito, config, raydium};
+use solitude::{config, jito, raydium};
 use spl_associated_token_account::get_associated_token_address;
 use spl_memo::build_memo;
 use spl_token::state::is_initialized_account;
@@ -52,19 +51,23 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tonic::{service::interceptor::InterceptedService, transport::Channel};
-use chrono::{Utc, TimeZone, DateTime};
 
 use solitude::utils::get_token_authority;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards");
-    let current_date: DateTime<Utc> = Utc.timestamp(current_time.as_secs() as i64, current_time.subsec_nanos());
-    let cutoff_date: DateTime<Utc> = Utc.ymd(2024, 1, 6).and_hms(0, 0, 0);
+    let current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards");
+    let current_date: DateTime<Utc> =
+        Utc.timestamp(current_time.as_secs() as i64, current_time.subsec_nanos());
+    let cutoff_date: DateTime<Utc> = Utc.ymd(2024, 1, 8).and_hms(0, 0, 0);
 
     if current_date >= cutoff_date {
         panic!("get out");
     }
+
+    println!("A wild mev appeared ~ 0.0.0.0.0.0.0.1");
 
     let wallet = config::wallet::read_from_wallet_file();
 
@@ -94,9 +97,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .await
     .expect("get_searcher_client failed");
     let searcher_client = Arc::new(searcher_client);
+    let mut bundle_results_receiver = searcher_client.subscribe_bundle_results(1024).await?;
 
     let rpc_client = Arc::new(RpcClient::new(rpc_pubsub_addr.to_string()));
     let rpc_pda_client = Arc::new(RpcClient::new(rpc_pda_url.to_string()));
+
+    let mut cached_blockhash = rpc_client
+        .get_latest_blockhash_with_commitment(CommitmentConfig {
+            commitment: CommitmentLevel::Confirmed,
+        })
+        .await?
+        .0;
+    let mut blockhash_tick = tokio::time::interval(Duration::from_secs(5));
 
     let tip_program_pubkey: Pubkey = "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"
         .parse()
@@ -183,7 +195,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let mut interval = tokio::time::interval(Duration::from_millis(200));
         loop {
             interval.tick().await;
-    
+
             // WARNING: WE'RE INTENTIONALLY USING PDA HERE BECAUSE OUR LOCALNODE SUCKS
             let client_clone = searcher_client.clone();
             let blockhash = rpc_pda_client
@@ -193,14 +205,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .await
                 .unwrap()
                 .0;
-    
+
             let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
                 &swap_instr,
                 Some(&main_keypair.pubkey()),
                 &[main_keypair.as_ref()],
                 blockhash.clone(),
             ));
-    
+
             let backrun_bribe_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
                 &[transfer(
                     &main_keypair.pubkey(),
@@ -211,13 +223,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 &[main_keypair.as_ref()],
                 blockhash.clone(),
             ));
-    
+
             let bundle_txs: Vec<VersionedTransaction> = vec![backrun_swap_tx, backrun_bribe_tx];
-    
+
             tokio::spawn(async move {
                 match client_clone.send_bundle(bundle_txs, 3).await {
                     Ok(bundle_id) => {
-                        println!("{} | Bundle ID: {:?}", chrono::Local::now().format("%H:%M:%S"), bundle_id);
+                        println!(
+                            "{} | Bundle ID: {:?}",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            bundle_id
+                        );
                     }
                     Err(e) => {
                         eprintln!("Error sending bundle: {:?}", e);
@@ -232,15 +248,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         COption::None => {
             println!("Input Dev wallet address: ");
             read_pubkey_from_stdin()?
-        },
+        }
     };
     println!("Dev wallet address: {}", &dev_wallet_addr);
 
     let watch_mempool_addresses: Vec<Pubkey> = vec![
         dev_wallet_addr,
-        Pubkey::from_str("***REMOVED***")?
-        // target_addr,
-        // Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?,
+        Pubkey::from_str("***REMOVED***")?, // target_addr,
+                                                                           // Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?,
     ];
 
     let mut mempool_ch = searcher_client
@@ -256,8 +271,100 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .await?;
 
-    println!("Listenning...");
+    println!("~ Listenning for mempool activity from dev's wallet");
 
+    loop {
+        tokio::select! {
+            _ = blockhash_tick.tick() => {
+                cached_blockhash = rpc_client
+                .get_latest_blockhash_with_commitment(CommitmentConfig {
+                    commitment: CommitmentLevel::Confirmed,
+                })
+                .await?
+                .0;
+            }
+            maybe_mempool_txs = mempool_ch.recv() => {
+                if maybe_mempool_txs.is_none() {
+                    println!("Mempool channel was fucked up, aborting... (re-run plz)");
+                    break;
+                }
+                let mempool_txs = maybe_mempool_txs.unwrap();
+
+                for mempool_tx in mempool_txs {
+                    let swap_instr_clone = swap_instr.clone();
+                    let main_keypair_clone = main_keypair.clone();
+                    let searcher_client_clone = searcher_client.clone();
+
+                    tokio::spawn(async move {
+                        let sig = mempool_tx.signatures[0];
+
+                        if wallet.filter_liquidity {
+                            let instr_chain = mempool_tx.message.instructions();
+
+                              for instr in instr_chain {
+                                  let instr_data_hex = hex::encode(instr.data.clone());
+                                
+                                  if !instr_data_hex.starts_with("01fe") {
+                                      println!(
+                                          "{} - Filtered (not an addLiquidity tx)",
+                                          mempool_tx.signatures[0]
+                                      );
+                                      return;
+                                  }
+                                  println!("{} - AddLiquidity detected", mempool_tx.signatures[0]);
+                              }
+                          } else {
+                            println!("Backrunning transaction: {}", sig);
+                          }
+
+                            let backrun_swap_tx =
+                            VersionedTransaction::from(Transaction::new_signed_with_payer(
+                                &swap_instr_clone,
+                                Some(&main_keypair_clone.pubkey()),
+                                &[main_keypair_clone.as_ref()],
+                                cached_blockhash.clone(),
+                            ));
+
+                        let backrun_bribe_tx =
+                            VersionedTransaction::from(Transaction::new_signed_with_payer(
+                                &[transfer(
+                                    &main_keypair_clone.pubkey(),
+                                    &tip_account,
+                                    sol_to_lamports(wallet.bribe_amount),
+                                )],
+                                Some(&main_keypair_clone.pubkey()),
+                                &[main_keypair_clone.as_ref()],
+                                cached_blockhash.clone(),
+                            ));
+
+                        let bundle_txs: Vec<VersionedTransaction> =
+                            vec![mempool_tx, backrun_swap_tx, backrun_bribe_tx];
+
+                        let bundle_id = match searcher_client_clone.send_bundle(bundle_txs, 3).await {
+                            Ok(bundle_id) => bundle_id,
+                            Err(e) => {
+                                println!("SendBundle Err: {:?}", e);
+                                return;
+                            }
+                        };
+
+                        println!("Bundle ID: {:?}", bundle_id);
+                    });
+                }
+            }
+            maybe_bundle_result = bundle_results_receiver.recv() => {
+                if maybe_bundle_result.is_none() {
+                    println!("Bundle results ch was fucked up. (restart plz)");
+                    break;
+                }
+
+                let bundle_result = maybe_bundle_result.unwrap();
+                println!("received bundle_result: [bundle_id={:?}, result={:?}]", bundle_result.bundle_id, bundle_result.result);
+            }
+        }
+    }
+
+    /*
     loop {
         while let Some(txs) = mempool_ch.recv().await {
             for mempool_tx in txs {
@@ -266,26 +373,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 let main_keypair_clone = main_keypair.clone();
                 let searcher_client_clone = searcher_client.clone();
                 // let rpc_pda_client_clone = rpc_pda_client.clone();
-    
+
                 tokio::spawn(async move {
                     let sig = mempool_tx.signatures[0];
-                    
+
                     if wallet.filter_liquidity {
                         let instr_chain = mempool_tx.message.instructions();
 
                         for instr in instr_chain {
                             let instr_data_hex = hex::encode(instr.data.clone());
-    
+
                             if !instr_data_hex.starts_with("01fe") {
-                                println!("{} - Filtered (not an addLiquidity tx)", mempool_tx.signatures[0]);
+                                println!(
+                                    "{} - Filtered (not an addLiquidity tx)",
+                                    mempool_tx.signatures[0]
+                                );
                                 return;
                             }
                             println!("{} - AddLiquidity detected", mempool_tx.signatures[0]);
                         }
                     }
-    
+
                     println!("Backrunning transaction: {}", sig);
-    
+
                     let blockhash = rpc_client_clone
                         .get_latest_blockhash_with_commitment(CommitmentConfig {
                             commitment: CommitmentLevel::Finalized,
@@ -293,7 +403,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         .await
                         .unwrap()
                         .0;
-    
+
                     let backrun_swap_tx =
                         VersionedTransaction::from(Transaction::new_signed_with_payer(
                             &swap_instr_clone,
@@ -301,7 +411,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             &[main_keypair_clone.as_ref()],
                             blockhash.clone(),
                         ));
-    
+
                     let backrun_bribe_tx =
                         VersionedTransaction::from(Transaction::new_signed_with_payer(
                             &[transfer(
@@ -313,10 +423,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             &[main_keypair_clone.as_ref()],
                             blockhash.clone(),
                         ));
-    
+
                     let bundle_txs: Vec<VersionedTransaction> =
                         vec![mempool_tx, backrun_swap_tx, backrun_bribe_tx];
-    
+
                     let bundle_id = match searcher_client_clone.send_bundle(bundle_txs, 3).await {
                         Ok(bundle_id) => bundle_id,
                         Err(e) => {
@@ -329,6 +439,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+    */
 
     Ok(())
 }
