@@ -6,6 +6,8 @@ pub struct Wallet {
     pub pk: String,
     pub amounts: HashMap<String, f64>,
     pub bribe_amount: f64,
+    pub spam: bool,
+    pub filter_liquidity: bool,
 }
 
 pub fn read_from_wallet_file() -> Wallet {
