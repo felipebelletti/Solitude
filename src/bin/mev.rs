@@ -1,9 +1,4 @@
-mod config;
-mod jito;
-mod local_api;
-mod openserum_api;
-mod raydium;
-mod utils;
+
 
 use jito::{
     client_interceptor::ClientInterceptor, cluster_data_impl::ClusterDataImpl, grpc_connect,
@@ -39,6 +34,7 @@ use solana_sdk::{
     transaction::{Transaction, VersionedTransaction},
 };
 use solana_transaction_status::UiTransactionEncoding;
+use solitude::{jito, config, raydium};
 use spl_associated_token_account::get_associated_token_address;
 use spl_memo::build_memo;
 use spl_token::state::is_initialized_account;
@@ -58,7 +54,7 @@ use std::{
 use tonic::{service::interceptor::InterceptedService, transport::Channel};
 use chrono::{Utc, TimeZone, DateTime};
 
-use crate::utils::get_token_authority;
+use solitude::utils::get_token_authority;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -183,50 +179,53 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // }).await?;
     // exit(1);
 
-    // let mut interval = tokio::time::interval(Duration::from_millis(200));
-    // loop {
-    //     interval.tick().await;
-
-    //     let client_clone = searcher_client.clone();
-    //     let blockhash = rpc_client
-    //         .get_latest_blockhash_with_commitment(CommitmentConfig {
-    //             commitment: CommitmentLevel::Finalized,
-    //         })
-    //         .await
-    //         .unwrap()
-    //         .0;
-
-    //     let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-    //         &swap_instr,
-    //         Some(&main_keypair.pubkey()),
-    //         &[main_keypair.as_ref()],
-    //         blockhash.clone(),
-    //     ));
-
-    //     let backrun_bribe_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-    //         &[transfer(
-    //             &main_keypair.pubkey(),
-    //             &tip_account,
-    //             sol_to_lamports(wallet.bribe_amount),
-    //         )],
-    //         Some(&main_keypair.pubkey()),
-    //         &[main_keypair.as_ref()],
-    //         blockhash.clone(),
-    //     ));
-
-    //     let bundle_txs: Vec<VersionedTransaction> = vec![backrun_swap_tx, backrun_bribe_tx];
-
-    //     tokio::spawn(async move {
-    //         match client_clone.send_bundle(bundle_txs, 3).await {
-    //             Ok(bundle_id) => {
-    //                 println!("Bundle ID: {:?}", bundle_id);
-    //             }
-    //             Err(e) => {
-    //                 eprintln!("Error sending bundle: {:?}", e);
-    //             }
-    //         }
-    //     });
-    // }
+    if wallet.spam {
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        loop {
+            interval.tick().await;
+    
+            // WARNING: WE'RE INTENTIONALLY USING PDA HERE BECAUSE OUR LOCALNODE SUCKS
+            let client_clone = searcher_client.clone();
+            let blockhash = rpc_pda_client
+                .get_latest_blockhash_with_commitment(CommitmentConfig {
+                    commitment: CommitmentLevel::Processed,
+                })
+                .await
+                .unwrap()
+                .0;
+    
+            let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+                &swap_instr,
+                Some(&main_keypair.pubkey()),
+                &[main_keypair.as_ref()],
+                blockhash.clone(),
+            ));
+    
+            let backrun_bribe_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+                &[transfer(
+                    &main_keypair.pubkey(),
+                    &tip_account,
+                    sol_to_lamports(wallet.bribe_amount),
+                )],
+                Some(&main_keypair.pubkey()),
+                &[main_keypair.as_ref()],
+                blockhash.clone(),
+            ));
+    
+            let bundle_txs: Vec<VersionedTransaction> = vec![backrun_swap_tx, backrun_bribe_tx];
+    
+            tokio::spawn(async move {
+                match client_clone.send_bundle(bundle_txs, 3).await {
+                    Ok(bundle_id) => {
+                        println!("{} | Bundle ID: {:?}", chrono::Local::now().format("%H:%M:%S"), bundle_id);
+                    }
+                    Err(e) => {
+                        eprintln!("Error sending bundle: {:?}", e);
+                    }
+                }
+            });
+        }
+    }
 
     let dev_wallet_addr = match get_token_authority(rpc_pda_client.as_ref(), &target_addr).await? {
         COption::Some(w) => w,
@@ -266,16 +265,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 let swap_instr_clone = swap_instr.clone();
                 let main_keypair_clone = main_keypair.clone();
                 let searcher_client_clone = searcher_client.clone();
+                // let rpc_pda_client_clone = rpc_pda_client.clone();
     
                 tokio::spawn(async move {
                     let sig = mempool_tx.signatures[0];
-                    // let caller = mempool_tx.message.static_account_keys()[0];
+                    
+                    if wallet.filter_liquidity {
+                        let instr_chain = mempool_tx.message.instructions();
+
+                        for instr in instr_chain {
+                            let instr_data_hex = hex::encode(instr.data.clone());
     
-                    // if caller != dev_wallet_addr {
-                    //     return;
-                    // }
+                            if !instr_data_hex.starts_with("01fe") {
+                                println!("{} - Filtered (not an addLiquidity tx)", mempool_tx.signatures[0]);
+                                return;
+                            }
+                            println!("{} - AddLiquidity detected", mempool_tx.signatures[0]);
+                        }
+                    }
     
-                    println!("Dev TX: {}", sig);
+                    println!("Backrunning transaction: {}", sig);
     
                     let blockhash = rpc_client_clone
                         .get_latest_blockhash_with_commitment(CommitmentConfig {
