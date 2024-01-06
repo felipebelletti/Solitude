@@ -136,7 +136,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Pubkey::from_str("bjEf4LPBqwGfn8xGfSToy7VUanQeT1EifEwZDopHk9Y")?,
         "detetive",
     );
-    let ignore_unknown_callers = true;
+    let ignore_unknown_callers = false;
 
     loop {
         while let Some(txs) = mempool_ch.recv().await {
