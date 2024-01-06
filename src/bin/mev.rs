@@ -33,7 +33,10 @@ use solana_sdk::{
     transaction::{Transaction, VersionedTransaction},
 };
 use solana_transaction_status::UiTransactionEncoding;
-use solitude::{config, jito, raydium};
+use solitude::{
+    config::{self, wallet::Wallet},
+    jito, raydium, utils,
+};
 use spl_associated_token_account::get_associated_token_address;
 use spl_memo::build_memo;
 use spl_token::state::is_initialized_account;
@@ -50,9 +53,12 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use tokio::task::JoinHandle;
 use tonic::{service::interceptor::InterceptedService, transport::Channel};
 
 use solitude::utils::get_token_authority;
+
+use solitude::mev_helpers::MevHelpers;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -69,7 +75,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("A wild mev appeared ~ 0.0.0.0.0.0.0.1");
 
-    let wallet = config::wallet::read_from_wallet_file();
+    let wallet = Arc::new(config::wallet::read_from_wallet_file());
 
     let main_keypair =
         Arc::new(Keypair::from_bytes(&bs58::decode(&wallet.pk).into_vec().unwrap()).unwrap());
@@ -84,20 +90,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap(),
     );
 
-    let block_engine_url = "https://frankfurt.mainnet.block-engine.jito.wtf";
+    // let block_engine_url = "https://frankfurt.mainnet.block-engine.jito.wtf";
+    let block_engine_url = "https://ny.mainnet.block-engine.jito.wtf";
     let rpc_pubsub_addr = "http://127.0.0.1:8899/";
     let rpc_pda_url = "https://tame-ancient-mountain.solana-mainnet.quiknode.pro/6a9a95bf7bbb108aea620e7ee4c1fd5e1b67cc62";
 
-    let (mut searcher_client, _) = jito::get_searcher_client(
-        &jito_auth_keypair,
-        &graceful_panic(None),
-        block_engine_url,
-        rpc_pubsub_addr,
-    )
-    .await
-    .expect("get_searcher_client failed");
-    let searcher_client = Arc::new(searcher_client);
-    let mut bundle_results_receiver = searcher_client.subscribe_bundle_results(1024).await?;
+    // let (mut searcher_client, _) = jito::get_searcher_client(
+    //     &jito_auth_keypair,
+    //     &graceful_panic(None),
+    //     block_engine_url,
+    //     rpc_pubsub_addr,
+    // )
+    // .await
+    // .expect("get_searcher_client failed");
+    // let searcher_client = Arc::new(searcher_client);
+    // let mut bundle_results_receiver = searcher_client.subscribe_bundle_results(1024).await?;
 
     let rpc_client = Arc::new(RpcClient::new(rpc_pubsub_addr.to_string()));
     let rpc_pda_client = Arc::new(RpcClient::new(rpc_pda_url.to_string()));
@@ -123,12 +130,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (market_account_pubkey, market_account) =
         raydium::market::exhaustive_get_openbook_market_for_address(&target_addr, &rpc_pda_client)
             .await?;
-    // let (raydium_pool_addr, raydium_pool_account) =
-    //     raydium::market::exhaustive_get_raydium_pool_for_address(&target_addr, &rpc_pda_client)
-    //         .await?;
     let parsed_market_account = raydium::market::parse_openbook_market_account(&market_account);
-    // let parsed_raydium_pool_account =
-    //     raydium::market::parse_raydium_pool_account(raydium_pool_account);
 
     let pool_key = raydium::market::craft_pool_key(
         &rpc_pda_client,
@@ -156,15 +158,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
 
-    let swap_instr: Arc<Vec<Instruction>> = Arc::new(raydium::get_swap_in_instr(
-        &rpc_client,
-        &main_keypair,
-        &pool_key,
-        &paired_addr,
-        &target_addr,
-        buy_amount.clone(),
-    )
-    .await?);
+    let swap_instr: Arc<Vec<Instruction>> = Arc::new(
+        raydium::get_swap_in_instr(
+            &rpc_client,
+            &main_keypair,
+            &pool_key,
+            &paired_addr,
+            &target_addr,
+            buy_amount.clone(),
+        )
+        .await?,
+    );
 
     // test
     // println!("{:#?}", &parsed_market_account);
@@ -191,6 +195,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // }).await?;
     // exit(1);
 
+    /*
     if wallet.spam {
         let mut interval = tokio::time::interval(Duration::from_millis(200));
         loop {
@@ -198,7 +203,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             // WARNING: WE'RE INTENTIONALLY USING PDA HERE BECAUSE OUR LOCALNODE SUCKS
             let client_clone = searcher_client.clone();
-            let blockhash = rpc_pda_client
+            let blockhash = rpc_client
                 .get_latest_blockhash_with_commitment(CommitmentConfig {
                     commitment: CommitmentLevel::Processed,
                 })
@@ -242,6 +247,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             });
         }
     }
+    */
 
     let dev_wallet_addr = match get_token_authority(rpc_pda_client.as_ref(), &target_addr).await? {
         COption::Some(w) => w,
@@ -253,23 +259,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Dev wallet address: {}", &dev_wallet_addr);
 
     let watch_mempool_addresses: Vec<Pubkey> = vec![
-        dev_wallet_addr,
+        // dev_wallet_addr,
         Pubkey::from_str("FALCN9HKepm85okkGJREEuqu4J8ZmQaA63VJtB2oeuay")?, // target_addr,
-                                                                           // Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?,
+                                                                           // Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?
     ];
 
-    let mut mempool_ch = searcher_client
-        .subscribe_mempool_programs(
-            &watch_mempool_addresses,
-            vec![
-                "amsterdam".to_string(),
-                "frankfurt".to_string(),
-                "ny".to_string(),
-                "tokyo".to_string(),
-            ],
-            1024,
-        )
-        .await?;
+    let mev_helpers = Arc::new(
+        MevHelpers::new(jito_auth_keypair, rpc_pubsub_addr)
+            .await
+            .expect("Failed to initialize MevHelpers"),
+    );
+    let mut mempool_ch = mev_helpers
+        .listen_for_transactions(&watch_mempool_addresses)
+        .await;
+    let mut bundle_results_ch = mev_helpers.listen_for_bundle_results().await;
 
     println!("~ Listenning for mempool activity from dev's wallet");
 
@@ -283,95 +286,48 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .await?
                 .0;
             }
-            maybe_mempool_txs = mempool_ch.recv() => {
-                tokio::spawn(async move {
-                    if maybe_mempool_txs.is_none() {
-                        panic!("Mempool channel was fucked up, aborting... (re-run plz)");
-                    }
-                    
-                    let mempool_txs = maybe_mempool_txs.unwrap();
-                    for mempool_tx in mempool_txs {
-                        let swap_instr_clone = swap_instr.clone();
-                        let main_keypair_clone = main_keypair.clone();
-                        let searcher_client_clone = searcher_client.clone();
-    
-                        tokio::spawn(async move {
-                            let sig = mempool_tx.signatures[0];
-    
-                            if wallet.filter_liquidity {
-                                let instr_chain = mempool_tx.message.instructions();
-    
-                                  for instr in instr_chain {
-                                      let instr_data_hex = hex::encode(instr.data.clone());
-    
-                                      if !instr_data_hex.starts_with("01fe") {
-                                          println!(
-                                              "{} - Filtered (not an addLiquidity tx)",
-                                              mempool_tx.signatures[0]
-                                          );
-                                          return;
-                                      }
-                                      println!("{} - AddLiquidity detected", mempool_tx.signatures[0]);
-                                  }
-                              } else {
-                                println!("Backrunning transaction: {}", sig);
-                              }
-    
-                                let backrun_swap_tx =
-                                VersionedTransaction::from(Transaction::new_signed_with_payer(
-                                    &swap_instr_clone,
-                                    Some(&main_keypair_clone.pubkey()),
-                                    &[main_keypair_clone.as_ref()],
-                                    cached_blockhash.clone(),
-                                ));
-    
-                            let backrun_bribe_tx =
-                                VersionedTransaction::from(Transaction::new_signed_with_payer(
-                                    &[transfer(
-                                        &main_keypair_clone.pubkey(),
-                                        &tip_account,
-                                        sol_to_lamports(wallet.bribe_amount),
-                                    )],
-                                    Some(&main_keypair_clone.pubkey()),
-                                    &[main_keypair_clone.as_ref()],
-                                    cached_blockhash.clone(),
-                                ));
-    
-                            let bundle_txs: Vec<VersionedTransaction> =
-                                vec![mempool_tx, backrun_swap_tx, backrun_bribe_tx];
-    
-                            let bundle_id = match searcher_client_clone.send_bundle(bundle_txs).await {
-                                Ok(bundle_id) => bundle_id,
-                                Err(e) => {
-                                    println!("SendBundle Err: {:?}", e);
-                                    return;
-                                }
-                            };
-    
-                            println!("Bundle ID: {:?}", bundle_id);
-                        });
-                    }
-                });
+            maybe_mempool_tx = mempool_ch.recv() => {
+                if let Some(mempool_tx) = maybe_mempool_tx {
+                    let swap_instr = Arc::clone(&swap_instr);
+                    let main_keypair = Arc::clone(&main_keypair);
+                    let mev_helpers = Arc::clone(&mev_helpers); // Clone Arc of MevHelpers
+                    let wallet = Arc::clone(&wallet);
+                    let cached_blockhash = cached_blockhash.clone();
+                    let tip_account = tip_account.clone(); // Assuming tip_account is cloneable
 
-            }
-            maybe_bundle_result = bundle_results_receiver.recv() => {
-                if maybe_bundle_result.is_none() {
-                    println!("Bundle results ch was fucked up. (restart plz)");
+                    tokio::spawn(async move {
+                        process_transaction(mempool_tx, swap_instr, main_keypair, mev_helpers, cached_blockhash, &wallet, &tip_account).await;
+                    });
+                } else {
+                    println!("Mempool channel was disconnected, aborting...");
                     break;
                 }
-
-                let bundle_stats = maybe_bundle_result.unwrap();
-                let bundle_result = bundle_stats.result.unwrap();
-                println!("received bundle_result: [bundle_id={:?}, result={:?}]", bundle_stats.bundle_id, bundle_result);
-
-                match bundle_result {
-                    bundle_result::Result::Accepted(_accepted_result) => {
-                        println!("BUNDLE ACCEPTED!");
-
-                    },
-                    _ => {
-
-                    },
+            }
+            maybe_bundle_result = bundle_results_ch.recv() => {
+                if let Some(bundle_result) = maybe_bundle_result {
+                    match bundle_result.result {
+                        Some(bundle_result::Result::Accepted(_accepted_result)) => {
+                            println!("\x1b[92m{} | Bundle {} was ACCEPTED on slot {} by validator {}\x1b[0m", utils::now_ms(), bundle_result.bundle_id, _accepted_result.slot, _accepted_result.validator_identity);
+                        },
+                        Some(bundle_result::Result::Rejected(_rejected_result)) => {
+                            println!("{} | Bundle {} was rejected, reason: {:?}", utils::now_ms(), bundle_result.bundle_id, _rejected_result.reason.expect("!reason"));
+                        },
+                        Some(bundle_result::Result::Processed(_processed_result)) => {
+                            println!("{} | Bundle {} was processed on slot {} by validator {} with bundle index of {}", utils::now_ms(), bundle_result.bundle_id, _processed_result.slot, _processed_result.validator_identity, _processed_result.bundle_index);
+                        },
+                        Some(bundle_result::Result::Finalized(_finalized_result)) => {
+                            println!("{} | Bundle {} was finalized (idk what that means either lol)", utils::now_ms(), bundle_result.bundle_id);
+                        },
+                        Some(bundle_result::Result::Dropped(_dropped_result)) => {
+                            println!("{} | Bundle {} was DROPPED, reason: {:?}", utils::now_ms(), bundle_result.bundle_id, _dropped_result.reason);
+                        },
+                        None => {
+                            println!("{} | Bundle {} was dropped due to an internal error (\"none\" was returned). thats awkward and should not happen", utils::now_ms(), bundle_result.bundle_id);
+                        }
+                    }
+                } else {
+                    println!("Bundle results channel was disconnected. Restart required.");
+                    break;
                 }
             }
         }
@@ -455,6 +411,66 @@ async fn main() -> Result<(), Box<dyn Error>> {
     */
 
     Ok(())
+}
+
+async fn process_transaction(
+    mempool_tx: VersionedTransaction,
+    swap_instr: Arc<Vec<Instruction>>,
+    main_keypair: Arc<Keypair>,
+    mev_helpers: Arc<MevHelpers>,
+    cached_blockhash: solana_program::hash::Hash,
+    wallet: &Wallet,
+    tip_account: &Pubkey,
+) {
+    let sig = mempool_tx.signatures[0];
+
+    // Filtering logic
+    if wallet.filter_liquidity {
+        let is_liquidity_tx = mempool_tx
+            .message
+            .instructions()
+            .iter()
+            .any(|instr| hex::encode(instr.data.clone()).starts_with("01fe"));
+
+        if !is_liquidity_tx {
+            println!("{} - Filtered (not an addLiquidity tx)", sig);
+            return;
+        }
+    }
+    println!("Backrunning transaction: {}", sig);
+
+    // Creating transactions
+    let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+        &swap_instr,
+        Some(&main_keypair.pubkey()),
+        &[main_keypair.as_ref()],
+        cached_blockhash,
+    ));
+
+    let backrun_bribe_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+        &[transfer(
+            &main_keypair.pubkey(),
+            &tip_account,
+            sol_to_lamports(wallet.bribe_amount),
+        )],
+        Some(&main_keypair.pubkey()),
+        &[main_keypair.as_ref()],
+        cached_blockhash,
+    ));
+
+    let bundle_txs: Vec<VersionedTransaction> = vec![mempool_tx, backrun_swap_tx, backrun_bribe_tx];
+
+    let broadcast_handles = mev_helpers
+        .broadcast_bundle_to_all_engines(bundle_txs)
+        .await;
+
+    for handle in broadcast_handles {
+        match handle.await {
+            Ok(Ok(bundle_id)) => println!("Bundle ID from one engine: {:?}", bundle_id),
+            Ok(Err(e)) => eprintln!("Error sending bundle: {:?}", e),
+            Err(e) => eprintln!("Join error: {:?}", e),
+        }
+    }
 }
 
 pub fn graceful_panic(callback: Option<fn(&PanicInfo)>) -> Arc<AtomicBool> {

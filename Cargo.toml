@@ -47,6 +47,7 @@ solana-account-decoder = "1.10.20"
 hex = "0.4.3"
 chrono = "0.4.31"
 openssl = { version = "0.10", features = ["vendored"] }
+colored = "2.1.0"
 
 [profile.performance]
 inherits = "release"

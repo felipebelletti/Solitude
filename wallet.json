@@ -1,10 +1,10 @@
 {
-    "bribe_amount": 0.01,
+    "bribe_amount": 0.001,
     "amounts": {
-        "So11111111111111111111111111111111111111112": 0.01,
+        "So11111111111111111111111111111111111111112": 0.001,
         "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 10
     },
     "pk": "4ap8jphQdN2wZksCvJm71yYns1V5LzELCQd1WYCSUHJYhLeUQwKnTLGJKguKVee1ZCyGBMUq3RhBLXiehRNiRAWV",
     "spam": false,
-    "filter_liquidity": true
+    "filter_liquidity": false
 }
