@@ -1,6 +1,8 @@
 use std::error::Error;
 use std::str::FromStr;
 
+use chrono::format::DelayedFormat;
+use chrono::format::StrftimeItems;
 use jito_protos::auth;
 use solana_account_decoder::UiAccountData;
 use solana_client::{nonblocking::rpc_client::RpcClient, rpc_request::TokenAccountsFilter};
@@ -51,4 +53,8 @@ pub async fn sell_stream(
     
 
     Ok(())
+}
+
+pub fn now_ms() -> DelayedFormat<StrftimeItems<'static>>{
+    chrono::Local::now().format("%H:%M:%S%.3f")
 }
