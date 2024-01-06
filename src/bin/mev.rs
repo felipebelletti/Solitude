@@ -5,7 +5,7 @@ use jito::{
 };
 use jito_protos::{
     auth::auth_service_client::AuthServiceClient,
-    bundle::Bundle,
+    bundle::{bundle_result, Bundle},
     searcher::{self, searcher_service_client::SearcherServiceClient},
 };
 use rand::{
@@ -156,7 +156,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
 
-    let swap_instr = raydium::get_swap_in_instr(
+    let swap_instr: Arc<Vec<Instruction>> = Arc::new(raydium::get_swap_in_instr(
         &rpc_client,
         &main_keypair,
         &pool_key,
@@ -164,7 +164,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         &target_addr,
         buy_amount.clone(),
     )
-    .await?;
+    .await?);
 
     // test
     // println!("{:#?}", &parsed_market_account);
@@ -227,7 +227,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let bundle_txs: Vec<VersionedTransaction> = vec![backrun_swap_tx, backrun_bribe_tx];
 
             tokio::spawn(async move {
-                match client_clone.send_bundle(bundle_txs, 3).await {
+                match client_clone.send_bundle(bundle_txs).await {
                     Ok(bundle_id) => {
                         println!(
                             "{} | Bundle ID: {:?}",
@@ -284,73 +284,75 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .0;
             }
             maybe_mempool_txs = mempool_ch.recv() => {
-                if maybe_mempool_txs.is_none() {
-                    println!("Mempool channel was fucked up, aborting... (re-run plz)");
-                    break;
-                }
-                let mempool_txs = maybe_mempool_txs.unwrap();
-
-                for mempool_tx in mempool_txs {
-                    let swap_instr_clone = swap_instr.clone();
-                    let main_keypair_clone = main_keypair.clone();
-                    let searcher_client_clone = searcher_client.clone();
-
-                    tokio::spawn(async move {
-                        let sig = mempool_tx.signatures[0];
-
-                        if wallet.filter_liquidity {
-                            let instr_chain = mempool_tx.message.instructions();
-
-                              for instr in instr_chain {
-                                  let instr_data_hex = hex::encode(instr.data.clone());
-                                
-                                  if !instr_data_hex.starts_with("01fe") {
-                                      println!(
-                                          "{} - Filtered (not an addLiquidity tx)",
-                                          mempool_tx.signatures[0]
-                                      );
-                                      return;
+                tokio::spawn(async move {
+                    if maybe_mempool_txs.is_none() {
+                        panic!("Mempool channel was fucked up, aborting... (re-run plz)");
+                    }
+                    
+                    let mempool_txs = maybe_mempool_txs.unwrap();
+                    for mempool_tx in mempool_txs {
+                        let swap_instr_clone = swap_instr.clone();
+                        let main_keypair_clone = main_keypair.clone();
+                        let searcher_client_clone = searcher_client.clone();
+    
+                        tokio::spawn(async move {
+                            let sig = mempool_tx.signatures[0];
+    
+                            if wallet.filter_liquidity {
+                                let instr_chain = mempool_tx.message.instructions();
+    
+                                  for instr in instr_chain {
+                                      let instr_data_hex = hex::encode(instr.data.clone());
+    
+                                      if !instr_data_hex.starts_with("01fe") {
+                                          println!(
+                                              "{} - Filtered (not an addLiquidity tx)",
+                                              mempool_tx.signatures[0]
+                                          );
+                                          return;
+                                      }
+                                      println!("{} - AddLiquidity detected", mempool_tx.signatures[0]);
                                   }
-                                  println!("{} - AddLiquidity detected", mempool_tx.signatures[0]);
+                              } else {
+                                println!("Backrunning transaction: {}", sig);
                               }
-                          } else {
-                            println!("Backrunning transaction: {}", sig);
-                          }
+    
+                                let backrun_swap_tx =
+                                VersionedTransaction::from(Transaction::new_signed_with_payer(
+                                    &swap_instr_clone,
+                                    Some(&main_keypair_clone.pubkey()),
+                                    &[main_keypair_clone.as_ref()],
+                                    cached_blockhash.clone(),
+                                ));
+    
+                            let backrun_bribe_tx =
+                                VersionedTransaction::from(Transaction::new_signed_with_payer(
+                                    &[transfer(
+                                        &main_keypair_clone.pubkey(),
+                                        &tip_account,
+                                        sol_to_lamports(wallet.bribe_amount),
+                                    )],
+                                    Some(&main_keypair_clone.pubkey()),
+                                    &[main_keypair_clone.as_ref()],
+                                    cached_blockhash.clone(),
+                                ));
+    
+                            let bundle_txs: Vec<VersionedTransaction> =
+                                vec![mempool_tx, backrun_swap_tx, backrun_bribe_tx];
+    
+                            let bundle_id = match searcher_client_clone.send_bundle(bundle_txs).await {
+                                Ok(bundle_id) => bundle_id,
+                                Err(e) => {
+                                    println!("SendBundle Err: {:?}", e);
+                                    return;
+                                }
+                            };
+    
+                            println!("Bundle ID: {:?}", bundle_id);
+                        });
+                    }
+                });
 
-                            let backrun_swap_tx =
-                            VersionedTransaction::from(Transaction::new_signed_with_payer(
-                                &swap_instr_clone,
-                                Some(&main_keypair_clone.pubkey()),
-                                &[main_keypair_clone.as_ref()],
-                                cached_blockhash.clone(),
-                            ));
-
-                        let backrun_bribe_tx =
-                            VersionedTransaction::from(Transaction::new_signed_with_payer(
-                                &[transfer(
-                                    &main_keypair_clone.pubkey(),
-                                    &tip_account,
-                                    sol_to_lamports(wallet.bribe_amount),
-                                )],
-                                Some(&main_keypair_clone.pubkey()),
-                                &[main_keypair_clone.as_ref()],
-                                cached_blockhash.clone(),
-                            ));
-
-                        let bundle_txs: Vec<VersionedTransaction> =
-                            vec![mempool_tx, backrun_swap_tx, backrun_bribe_tx];
-
-                        let bundle_id = match searcher_client_clone.send_bundle(bundle_txs, 3).await {
-                            Ok(bundle_id) => bundle_id,
-                            Err(e) => {
-                                println!("SendBundle Err: {:?}", e);
-                                return;
-                            }
-                        };
-
-                        println!("Bundle ID: {:?}", bundle_id);
-                    });
-                }
             }
             maybe_bundle_result = bundle_results_receiver.recv() => {
                 if maybe_bundle_result.is_none() {
@@ -358,8 +360,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     break;
                 }
 
-                let bundle_result = maybe_bundle_result.unwrap();
-                println!("received bundle_result: [bundle_id={:?}, result={:?}]", bundle_result.bundle_id, bundle_result.result);
+                let bundle_stats = maybe_bundle_result.unwrap();
+                let bundle_result = bundle_stats.result.unwrap();
+                println!("received bundle_result: [bundle_id={:?}, result={:?}]", bundle_stats.bundle_id, bundle_result);
+
+                match bundle_result {
+                    bundle_result::Result::Accepted(_accepted_result) => {
+                        println!("BUNDLE ACCEPTED!");
+
+                    },
+                    _ => {
+
+                    },
+                }
             }
         }
     }

@@ -109,21 +109,7 @@ where
     pub async fn send_bundle(
         &self,
         transactions: Vec<VersionedTransaction>,
-        // Defines how many slots to lookahead for a jito-solana validator in order to
-        // determine whether or not the bundle can be sent.
-        slot_lookahead: u64,
     ) -> SearcherClientResult<BundleId> {
-        // let next_leader_slot = self
-        //     .cluster_data
-        //     .next_jito_validator()
-        //     .await
-        //     .ok_or(SearcherClientError::NoUpcomingJitoValidator)?
-        //     .1;
-
-        // if next_leader_slot > slot_lookahead + self.cluster_data.current_slot().await {
-        //     return Err(SearcherClientError::NoUpcomingJitoValidator);
-        // }
-
         let resp = self
             .searcher_service_client
             .lock()
@@ -385,15 +371,4 @@ pub async fn get_searcher_client(
         ),
         cluster_data_impl,
     ))
-}
-
-pub async fn send_bundles(
-    searcher_client: &mut SearcherClient<
-        ClusterDataImpl,
-        InterceptedService<Channel, ClientInterceptor>,
-    >,
-    bundle_txs: Vec<VersionedTransaction>,
-) -> Result<BundleId, SearcherClientError> {
-    let response = searcher_client.send_bundle(bundle_txs, 3).await?;
-    Ok(response)
 }
