@@ -51,10 +51,10 @@ impl MevHelpers {
                 .subscribe_mempool_programs(
                     watch_mempool_addresses,
                     vec![
-                        "amsterdam".to_string(),
-                        "frankfurt".to_string(),
-                        "ny".to_string(),
-                        "tokyo".to_string(),
+                        // "amsterdam".to_string(),
+                        // "frankfurt".to_string(),
+                        // "ny".to_string(),
+                        // "tokyo".to_string(),
                     ],
                     1024,
                 )
