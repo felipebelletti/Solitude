@@ -17,7 +17,7 @@ use super::utils::{
     get_associated_base_vault, get_associated_id, get_associated_open_orders,
     get_associated_quote_vault, get_associated_target_orders,
 };
-use crate::raydium::utils::get_associated_authority;
+use crate::raydium::utils::{get_associated_authority, get_associated_lp_mint};
 use crate::utils::get_token_decimals;
 
 lazy_static! {
@@ -247,7 +247,7 @@ pub struct PoolKey {
     pub id: Pubkey,
     pub base_mint: Pubkey,
     pub quote_mint: Pubkey,
-    // pub lp_mint: Pubkey, // not necessary for building a swap instruction
+    pub lp_mint: Pubkey, // not necessary for building a swap instruction
     pub base_decimals: u8,
     pub quote_decimals: u8,
     // pub lp_decimals: u8, // not necessary for building a swap instruction
@@ -340,13 +340,12 @@ pub async fn craft_pool_key(
         derivated_raydium_pool_quote_vault
     );
 
-    // let derivated_raydium_pool_base_vault_account = rpc_client
-    //     .get_account(&derivated_raydium_pool_base_vault)
-    //     .await.expect("derivated_raydium_pool_base_vault_account");
-    // let authority = Pubkey::new(&derivated_raydium_pool_base_vault_account.data[32..64]);
     let authority =
         get_associated_authority(&RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM).expect("authority");
     println!("Authority: {}", authority);
+
+    // TODO
+    let lp_mint_addr = get_associated_lp_mint(&RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM, &openbook_market_addr)?;
 
     Ok(PoolKey {
         id: raydium_pool_addr,
@@ -372,5 +371,7 @@ pub async fn craft_pool_key(
         market_bids: openbook_market.market_bids,
         market_asks: openbook_market.market_asks,
         market_event_queue: openbook_market.market_event_queue,
+
+        lp_mint: lp_mint_addr
     })
 }

@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         panic!("get out");
     }
 
-    println!("A wild mev appeared ~ 0.0.0.0.0.0.0.1");
+    println!("A wild mev appeared ~ 0.2");
 
     let wallet = Arc::new(config::wallet::read_from_wallet_file());
 
@@ -157,6 +157,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
 
     println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
+
+    utils::sell_stream(&rpc_pda_client, &main_keypair, &paired_addr, &target_addr, &market_account_pubkey, &pool_key, buy_amount.clone()).await?;
+    exit(1);
 
     let swap_instr: Arc<Vec<Instruction>> = Arc::new(
         raydium::get_swap_in_instr(
@@ -259,9 +262,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Dev wallet address: {}", &dev_wallet_addr);
 
     let watch_mempool_addresses: Vec<Pubkey> = vec![
-        // dev_wallet_addr,
+        dev_wallet_addr,
         Pubkey::from_str("FALCN9HKepm85okkGJREEuqu4J8ZmQaA63VJtB2oeuay")?, // target_addr,
-                                                                           // Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?
     ];
 
     let mev_helpers = Arc::new(
@@ -424,13 +426,12 @@ async fn process_transaction(
 ) {
     let sig = mempool_tx.signatures[0];
 
-    // Filtering logic
     if wallet.filter_liquidity {
         let is_liquidity_tx = mempool_tx
             .message
             .instructions()
             .iter()
-            .any(|instr| hex::encode(instr.data.clone()).starts_with("01fe"));
+            .any(|instr| instr.data.starts_with(&[0x01]));
 
         if !is_liquidity_tx {
             println!("{} - Filtered (not an addLiquidity tx)", sig);
@@ -439,7 +440,6 @@ async fn process_transaction(
     }
     println!("Backrunning transaction: {}", sig);
 
-    // Creating transactions
     let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
         &swap_instr,
         Some(&main_keypair.pubkey()),
