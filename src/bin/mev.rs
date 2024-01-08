@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .expect("Time went backwards");
     let current_date: DateTime<Utc> =
         Utc.timestamp(current_time.as_secs() as i64, current_time.subsec_nanos());
-    let cutoff_date: DateTime<Utc> = Utc.ymd(2024, 1, 8).and_hms(0, 0, 0);
+    let cutoff_date: DateTime<Utc> = Utc.ymd(2024, 1, 14).and_hms(0, 0, 0);
 
     if current_date >= cutoff_date {
         panic!("get out");
@@ -90,8 +90,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap(),
     );
 
-    // let block_engine_url = "https://frankfurt.mainnet.block-engine.jito.wtf";
-    let block_engine_url = "https://ny.mainnet.block-engine.jito.wtf";
     let rpc_pubsub_addr = "http://127.0.0.1:8899/";
     let rpc_pda_url = "https://tame-ancient-mountain.solana-mainnet.quiknode.pro/6a9a95bf7bbb108aea620e7ee4c1fd5e1b67cc62";
 
@@ -158,8 +156,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
 
-    utils::sell_stream(&rpc_pda_client, &main_keypair, &paired_addr, &target_addr, &market_account_pubkey, &pool_key, buy_amount.clone()).await?;
-    exit(1);
+    // utils::sell_stream(&rpc_pda_client, &main_keypair, &paired_addr, &target_addr, &market_account_pubkey, &pool_key, buy_amount.clone()).await?;
+    // exit(1);
 
     let swap_instr: Arc<Vec<Instruction>> = Arc::new(
         raydium::get_swap_in_instr(
