@@ -4,16 +4,12 @@ use rand::distributions::{Alphanumeric, DistString};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_program::{instruction::Instruction, system_instruction};
 use solana_sdk::{
-    bs58,
-    commitment_config::{CommitmentConfig, CommitmentLevel},
     native_token::sol_to_lamports,
     pubkey::Pubkey,
-    signature::{Keypair, Signer},
-    system_instruction::transfer,
-    transaction::{Transaction, VersionedTransaction}, account::ReadableAccount,
+    signature::{Keypair, Signer}, account::ReadableAccount,
 };
 use spl_associated_token_account::get_associated_token_address;
-use spl_token::state::is_initialized_account;
+
 
 use self::market::PoolKey;
 
@@ -109,7 +105,7 @@ pub async fn get_swap_in_instr(
     .expect("amm_swap failed");
     instr_chain.push(swap_instr);
 
-    let close_user_paired_account_instr = spl_token::instruction::close_account(
+    let _close_user_paired_account_instr = spl_token::instruction::close_account(
         &spl_token::id(),            // Token Program
         created_user_paired_account, // Account
         &signer_keypair.pubkey(),    // Destination
@@ -130,7 +126,7 @@ pub async fn get_swap_out_instr(
     token_addr: &Pubkey,
     token_amount: u64,
 ) -> Result<Vec<Instruction>, Box<dyn Error>> {
-    let user_target_token_account =
+    let _user_target_token_account =
         get_associated_token_address(&signer_keypair.pubkey(), &token_addr);
 
     let mut instr_chain: Vec<Instruction> = vec![];

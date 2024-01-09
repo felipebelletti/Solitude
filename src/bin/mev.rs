@@ -1,60 +1,42 @@
 use chrono::{DateTime, TimeZone, Utc};
-use jito::{
-    client_interceptor::ClientInterceptor, cluster_data_impl::ClusterDataImpl, grpc_connect,
-    BundleId, SearcherClient, SearcherClientError, SearcherClientResult,
-};
-use jito_protos::{
-    auth::auth_service_client::AuthServiceClient,
-    bundle::{bundle_result, Bundle},
-    searcher::{self, searcher_service_client::SearcherServiceClient},
-};
-use rand::{
-    distributions::{Alphanumeric, DistString},
-    thread_rng, Rng,
-};
-use raydium_amm::instruction::{self, simulate_swap_base_in};
-use raydium_contract_instructions::{
-    amm_instruction::{swap_base_in as amm_swap, ID as ammProgramID},
-    stable_instruction::{swap_base_in as stable_swap, ID as stableProgramID},
-};
-use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
+
+use jito_protos::bundle::bundle_result;
+use rand::{thread_rng, Rng};
+
+use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_program::{
     instruction::{CompiledInstruction, Instruction},
     program_option::COption,
-    system_instruction,
 };
 use solana_sdk::{
     bs58,
     commitment_config::{CommitmentConfig, CommitmentLevel},
     native_token::sol_to_lamports,
     pubkey::Pubkey,
-    signature::{Keypair, Signature, Signer},
+    signature::{Keypair, Signer},
     system_instruction::transfer,
     transaction::{Transaction, VersionedTransaction},
 };
-use solana_transaction_status::UiTransactionEncoding;
+
 use solitude::{
     config::{self, wallet::Wallet},
-    jito, raydium, utils,
+    raydium, utils,
 };
-use spl_associated_token_account::get_associated_token_address;
-use spl_memo::build_memo;
-use spl_token::state::is_initialized_account;
+use tokio::sync::mpsc;
+
 use std::{
     error::Error,
     io::{self, Write},
     panic::{self, PanicInfo},
     process::{self, exit},
-    result,
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::task::JoinHandle;
-use tonic::{service::interceptor::InterceptedService, transport::Channel};
 
 use solitude::utils::get_token_authority;
 
@@ -73,7 +55,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         panic!("get out");
     }
 
-    println!("A wild mev appeared ~ 0.2");
+    println!("A wild mev appeared ~ 0.2.2");
 
     let wallet = Arc::new(config::wallet::read_from_wallet_file());
 
@@ -81,31 +63,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Arc::new(Keypair::from_bytes(&bs58::decode(&wallet.pk).into_vec().unwrap()).unwrap());
     println!("Main keypair: {:?}", main_keypair.pubkey());
 
-    let jito_auth_keypair = Arc::new(
-        Keypair::from_bytes(
-            &bs58::decode("***REMOVED***")
-                .into_vec()
-                .unwrap(),
-        )
-        .unwrap(),
-    );
-
     let rpc_pubsub_addr = "http://127.0.0.1:8899/";
     let rpc_pda_url = "https://tame-ancient-mountain.solana-mainnet.quiknode.pro/6a9a95bf7bbb108aea620e7ee4c1fd5e1b67cc62";
 
-    // let (mut searcher_client, _) = jito::get_searcher_client(
-    //     &jito_auth_keypair,
-    //     &graceful_panic(None),
-    //     block_engine_url,
-    //     rpc_pubsub_addr,
-    // )
-    // .await
-    // .expect("get_searcher_client failed");
-    // let searcher_client = Arc::new(searcher_client);
-    // let mut bundle_results_receiver = searcher_client.subscribe_bundle_results(1024).await?;
-
     let rpc_client = Arc::new(RpcClient::new(rpc_pubsub_addr.to_string()));
     let rpc_pda_client = Arc::new(RpcClient::new(rpc_pda_url.to_string()));
+
+    let mev_helpers = Arc::new(
+        MevHelpers::new()
+            .await
+            .expect("Failed to initialize MevHelpers"),
+    );
 
     let mut cached_blockhash = rpc_client
         .get_latest_blockhash_with_commitment(CommitmentConfig {
@@ -115,11 +83,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .0;
     let mut blockhash_tick = tokio::time::interval(Duration::from_secs(5));
 
-    let tip_program_pubkey: Pubkey = "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"
-        .parse()
-        .unwrap();
-    let tip_accounts = generate_tip_accounts(&tip_program_pubkey);
-    let tip_account = tip_accounts[thread_rng().gen_range(0..tip_accounts.len())];
+    let tip_account = utils::generate_tip_account();
 
     println!("Enter target address: ");
     let target_addr = read_pubkey_from_stdin().unwrap();
@@ -155,9 +119,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
 
     println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
-
-    // utils::sell_stream(&rpc_pda_client, &main_keypair, &paired_addr, &target_addr, &market_account_pubkey, &pool_key, buy_amount.clone()).await?;
-    // exit(1);
 
     let swap_instr: Arc<Vec<Instruction>> = Arc::new(
         raydium::get_swap_in_instr(
@@ -264,28 +225,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Pubkey::from_str("***REMOVED***")?, // target_addr,
     ];
 
-    let mev_helpers = Arc::new(
-        MevHelpers::new(jito_auth_keypair, rpc_pubsub_addr)
-            .await
-            .expect("Failed to initialize MevHelpers"),
-    );
     let mut mempool_ch = mev_helpers
         .listen_for_transactions(&watch_mempool_addresses)
         .await;
     let mut bundle_results_ch = mev_helpers.listen_for_bundle_results().await;
+    let (blockhash_tx, mut blockhash_rx) = mpsc::unbounded_channel();
 
     println!("~ Listenning for mempool activity from dev's wallet");
 
     loop {
         tokio::select! {
-            _ = blockhash_tick.tick() => {
-                cached_blockhash = rpc_client
-                .get_latest_blockhash_with_commitment(CommitmentConfig {
-                    commitment: CommitmentLevel::Confirmed,
-                })
-                .await?
-                .0;
-            }
             maybe_mempool_tx = mempool_ch.recv() => {
                 if let Some(mempool_tx) = maybe_mempool_tx {
                     let swap_instr = Arc::clone(&swap_instr);
@@ -304,6 +253,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             maybe_bundle_result = bundle_results_ch.recv() => {
+                // TODO: might be optimized if used in a new thread context but then I wont have access to the stop_parsing var
                 if let Some(bundle_result) = maybe_bundle_result {
                     match bundle_result.result {
                         Some(bundle_result::Result::Accepted(_accepted_result)) => {
@@ -325,9 +275,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             println!("{} | Bundle {} was dropped due to an internal error (\"none\" was returned). thats awkward and should not happen", utils::now_ms(), bundle_result.bundle_id);
                         }
                     }
-                } else {
-                    println!("Bundle results channel was disconnected. Restart required.");
-                    break;
+                    continue;
+                }
+                println!("Bundle results channel was disconnected. Restart required.");
+                break;
+            }
+            _ = blockhash_tick.tick() => {
+                let client_clone = Arc::clone(&rpc_client);
+                let blockhash_tx_clone = blockhash_tx.clone();
+                tokio::spawn(async move {
+                    let new_blockhash = client_clone
+                        .get_latest_blockhash_with_commitment(CommitmentConfig {
+                            commitment: CommitmentLevel::Confirmed,
+                        })
+                        .await.unwrap()
+                        .0;
+                    blockhash_tx_clone.send(new_blockhash).unwrap();
+                });
+            }
+            _ = tokio::task::yield_now() => {
+                if let Ok(blockhash) = blockhash_rx.try_recv() {
+                    cached_blockhash = blockhash;
                 }
             }
         }
@@ -504,21 +472,6 @@ fn read_pubkey_from_stdin() -> Result<Pubkey, String> {
 
     let input = input.trim();
     input.parse::<Pubkey>().map_err(|e| e.to_string())
-}
-
-fn generate_tip_accounts(tip_program_pubkey: &Pubkey) -> Vec<Pubkey> {
-    let tip_pda_0 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_0"], tip_program_pubkey).0;
-    let tip_pda_1 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_1"], tip_program_pubkey).0;
-    let tip_pda_2 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_2"], tip_program_pubkey).0;
-    let tip_pda_3 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_3"], tip_program_pubkey).0;
-    let tip_pda_4 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_4"], tip_program_pubkey).0;
-    let tip_pda_5 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_5"], tip_program_pubkey).0;
-    let tip_pda_6 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_6"], tip_program_pubkey).0;
-    let tip_pda_7 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_7"], tip_program_pubkey).0;
-
-    vec![
-        tip_pda_0, tip_pda_1, tip_pda_2, tip_pda_3, tip_pda_4, tip_pda_5, tip_pda_6, tip_pda_7,
-    ]
 }
 
 fn pretty_print_instructions(instructions: &[CompiledInstruction]) {

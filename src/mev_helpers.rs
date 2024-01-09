@@ -1,6 +1,6 @@
 use jito::{
     client_interceptor::ClientInterceptor, cluster_data_impl::ClusterDataImpl,
-    SearcherClient, SearcherClientError, SearcherClientResult,
+    SearcherClient, SearcherClientError,
 };
 use jito_protos::bundle::BundleResult;
 use solana_program::pubkey::Pubkey;
@@ -9,14 +9,25 @@ use std::{sync::{Arc, atomic::{Ordering, AtomicBool}}, time::Duration, panic::{s
 use tonic::{service::interceptor::InterceptedService, transport::Channel};
 use tokio::{task::JoinHandle, sync::mpsc};
 
-use crate::{jito::{self, BundleId}, utils};
+use crate::{jito::{self, BundleId}};
 
 pub struct MevHelpers {
     searcher_clients: Vec<Arc<SearcherClient<ClusterDataImpl, InterceptedService<Channel, ClientInterceptor>>>>,
 }
 
 impl MevHelpers {
-    pub async fn new(jito_auth_keypair: Arc<Keypair>, rpc_pubsub_addr: &str) -> Result<Self, Box<dyn Error>> {
+    pub async fn new() -> Result<Self, Box<dyn Error>> {
+        let jito_auth_keypair = Arc::new(
+            Keypair::from_bytes(
+                &bs58::decode("***REMOVED***")
+                    .into_vec()
+                    .unwrap(),
+            )
+            .unwrap(),
+        );
+
+        let rpc_pubsub_addr = "http://127.0.0.1";
+
         let block_engine_urls = vec![
             "https://amsterdam.mainnet.block-engine.jito.wtf",
             "https://frankfurt.mainnet.block-engine.jito.wtf",

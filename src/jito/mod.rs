@@ -7,9 +7,9 @@ use std::sync::{
     Arc,
 };
 
-use bincode::serialize;
+
 use bytes::Bytes;
-use futures::{future::join_all, StreamExt};
+use futures::{StreamExt};
 use jito_protos::{
     auth::auth_service_client::AuthServiceClient,
     bundle::{Bundle, BundleResult},
@@ -20,7 +20,7 @@ use jito_protos::{
     },
 };
 use log::*;
-use solana_client::nonblocking::tpu_client::TpuClient;
+
 use solana_sdk::{
     clock::Slot, pubkey::Pubkey, signature::Keypair, transaction::VersionedTransaction,
 };

@@ -1,18 +1,18 @@
-use base64;
+
 use chrono::Local;
 use lazy_static::lazy_static;
 use solana_account_decoder::UiAccountEncoding;
-use solana_client::nonblocking::rpc_client;
+
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
-use solana_client::rpc_filter::{Memcmp, MemcmpEncodedBytes, MemcmpEncoding, RpcFilterType};
+use solana_client::rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType};
 use solana_sdk::account::Account;
-use solana_sdk::commitment_config::CommitmentConfig;
+
 use solana_sdk::pubkey::Pubkey;
 use std::error::Error;
 use std::str::FromStr;
 
-use super::public_api::Pool;
+
 use super::utils::{
     get_associated_base_vault, get_associated_id, get_associated_open_orders,
     get_associated_quote_vault, get_associated_target_orders,
@@ -293,7 +293,7 @@ pub async fn craft_pool_key(
         &openbook_market.market_id,
     )?;
 
-    println!("raydium_pool_addr: {}", raydium_pool_addr);
+    // println!("raydium_pool_addr: {}", raydium_pool_addr);
 
     // derivated keys from raydium_pool_id
     let derivated_raydium_open_orders = get_associated_open_orders(
@@ -302,10 +302,10 @@ pub async fn craft_pool_key(
     )
     .expect("derivated_raydium_open_orders");
 
-    println!(
-        "derivated_raydium_open_orders: {}",
-        derivated_raydium_open_orders
-    );
+    // println!(
+    //     "derivated_raydium_open_orders: {}",
+    //     derivated_raydium_open_orders
+    // );
 
     let derivated_raydium_target_orders = get_associated_target_orders(
         &RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM,
@@ -313,10 +313,10 @@ pub async fn craft_pool_key(
     )
     .expect("derivated_raydium_target_orders");
 
-    println!(
-        "derivated_raydium_target_orders: {}",
-        derivated_raydium_target_orders
-    );
+    // println!(
+    //     "derivated_raydium_target_orders: {}",
+    //     derivated_raydium_target_orders
+    // );
 
     let derivated_raydium_pool_base_vault = get_associated_base_vault(
         &RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM,
@@ -324,10 +324,10 @@ pub async fn craft_pool_key(
     )
     .expect("derivated_raydium_pool_base_vault");
 
-    println!(
-        "derivated_raydium_pool_base_vault: {}",
-        derivated_raydium_pool_base_vault
-    );
+    // println!(
+    //     "derivated_raydium_pool_base_vault: {}",
+    //     derivated_raydium_pool_base_vault
+    // );
 
     let derivated_raydium_pool_quote_vault = get_associated_quote_vault(
         &RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM,
@@ -335,14 +335,14 @@ pub async fn craft_pool_key(
     )
     .expect("derivated_raydium_pool_quote_vault");
 
-    println!(
-        "derivated_raydium_pool_quote_vault: {}",
-        derivated_raydium_pool_quote_vault
-    );
+    // println!(
+    //     "derivated_raydium_pool_quote_vault: {}",
+    //     derivated_raydium_pool_quote_vault
+    // );
 
     let authority =
         get_associated_authority(&RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM).expect("authority");
-    println!("Authority: {}", authority);
+    // println!("Authority: {}", authority);
 
     // TODO
     let lp_mint_addr = get_associated_lp_mint(&RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM, &openbook_market_addr)?;

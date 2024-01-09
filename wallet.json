@@ -4,6 +4,7 @@
         "So11111111111111111111111111111111111111112": 0.001,
         "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 10
     },
+    "bribe_amount_for_sell": 0.001,
     "pk": "***REMOVED***",
     "spam": false,
     "filter_liquidity": false

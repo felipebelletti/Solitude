@@ -13,7 +13,7 @@ pub fn get_associated_authority(program_id: &Pubkey) -> Result<Pubkey, Box<dyn E
 }
 
 pub fn get_associated_base_vault(program_id: &Pubkey, market_id: &Pubkey) -> Result<Pubkey, Box<dyn Error>> {
-    println!("Using programId: {} | Using marketId: {}", program_id, market_id);
+    // println!("Using programId: {} | Using marketId: {}", program_id, market_id);
 
     let seeds = &[program_id.as_ref(), market_id.as_ref(), b"coin_vault_associated_seed"];
     Ok(Pubkey::find_program_address(seeds, program_id).0)
