@@ -1,53 +1,62 @@
 use colored::*;
+use futures_util::Future;
+use futures_util::future::ready;
+use rand::thread_rng;
+use rand::Rng;
 use solana_program::native_token::lamports_to_sol;
+use solana_program::native_token::sol_to_lamports;
+use solana_program::system_instruction::transfer;
+use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::commitment_config::CommitmentLevel;
+use solana_sdk::signature::Signature;
+use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::VersionedTransaction;
 use std::error::Error;
+use std::io::BufRead;
+use std::io::Write;
+use std::io::{self, Read};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
+use std::thread::spawn;
+use termion::event::Key;
+use termion::input::TermRead;
+use termion::raw::IntoRawMode;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::task;
 
 use chrono::format::DelayedFormat;
 use chrono::format::StrftimeItems;
-use jito_protos::auth;
-use raydium_amm::instruction::simulate_get_pool_info;
+
 use raydium_amm::instruction::SimulateInstruction;
 use raydium_amm::instruction::SwapInstructionBaseIn;
-use raydium_amm::instruction::SwapInstructionBaseOut;
+
 use raydium_amm::processor::Processor;
-use raydium_amm::state::GetPoolData;
+
 use raydium_amm::state::GetSwapBaseInData;
-use raydium_amm::state::SimulateParams;
-use solana_account_decoder::UiAccountData;
-use solana_client::rpc_config::RpcSendTransactionConfig;
+
 use solana_client::{nonblocking::rpc_client::RpcClient, rpc_request::TokenAccountsFilter};
-use solana_program::account_info::AccountInfo;
+
 use solana_program::instruction::Instruction;
-use solana_program::native_token::sol_to_lamports;
+
 use solana_program::{program_option::COption, program_pack::Pack, pubkey::Pubkey};
 use solana_sdk::account::create_is_signer_account_infos;
 use solana_sdk::account::Account;
-use solana_sdk::commitment_config::CommitmentConfig;
-use solana_sdk::commitment_config::CommitmentLevel;
-use solana_sdk::transaction::Transaction;
-use solana_sdk::transaction::VersionedTransaction;
+
 use solana_sdk::{signature::Keypair, signer::Signer};
 use spl_associated_token_account::get_associated_token_address;
-use spl_token::state::Account as TokenAccount;
-use spl_token::state::Mint;
-use tokio::sync::mpsc::UnboundedSender;
 
+use spl_token::state::Mint;
+
+use crate::mev_helpers::MevHelpers;
 use crate::raydium::utils::get_associated_lp_mint;
 
 use crate::raydium;
 use crate::raydium::market::PoolKey;
+use solana_program::hash::Hash;
 use tokio::time::{self, Duration};
-
-use crossterm::{
-    event::{self, Event as CEvent, KeyCode, KeyEvent, KeyModifiers},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
-use device_query::{DeviceQuery, DeviceState, Keycode};
-use std::io::{self, Write};
 
 pub async fn get_token_decimals(
     client: &RpcClient,
@@ -70,17 +79,26 @@ pub async fn get_token_authority(
 }
 
 pub async fn sell_stream(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
+    pda_client: &Arc<RpcClient>,
     bought_wallet: &Keypair,
     paired_token_addr: &Pubkey,
     target_token_addr: &Pubkey,
     market_account: &Pubkey,
     pool_key: &PoolKey,
     token_bag_cost: f64,
+
+    bribe_amount_for_sell: f64,
 ) -> Result<(), Box<dyn Error>> {
+    let mev_helpers = Arc::new(
+        MevHelpers::new()
+            .await
+            .expect("Failed to initialize MevHelpers"),
+    );
+
     let bought_wallet_address = &bought_wallet.pubkey();
 
-    let binding = client
+    let binding = pda_client
         .get_token_accounts_by_owner(
             bought_wallet_address,
             TokenAccountsFilter::Mint(*target_token_addr),
@@ -89,7 +107,7 @@ pub async fn sell_stream(
     let token_account = binding.first().unwrap();
     let token_account_addr = { Pubkey::from_str(&token_account.pubkey)? };
 
-    let lp_mint_addr = get_associated_lp_mint(
+    let _lp_mint_addr = get_associated_lp_mint(
         &raydium_contract_instructions::amm_instruction::ID,
         &pool_key.market_id,
     )?;
@@ -100,119 +118,382 @@ pub async fn sell_stream(
     let target_token_token_account =
         get_associated_token_address(&bought_wallet.pubkey(), &target_token_addr);
 
-    let mut show_profit_tick = time::interval(Duration::from_millis(700));
+    let tip_account = generate_tip_account();
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        keyboard_task(tx).await;
-    });
-
-    let mut token_balance: u64 = client
+    let mut token_balance: u64 = pda_client
         .get_token_account_balance(&token_account_addr)
         .await?
         .amount
         .parse()?;
 
+    // let stdin = io::stdin();
+    // let mut stdin = stdin.lock().keys();
+    let mut is_stream_stopped = false;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tokio::task::spawn_blocking(move || {
+        let stdin = io::stdin();
+        for key in stdin.lock().keys() {
+            if let Ok(key) = key {
+                tx.send(key).unwrap();
+            }
+        }
+    });
+
     loop {
-        tokio::select! {
-                    _ = show_profit_tick.tick() => {
-                        token_balance = client
-                            .get_token_account_balance(&token_account_addr)
-                            .await?
-                            .amount
-                            .parse()?;
+        if let Ok(key) = rx.try_recv() {
+            if key == Key::Char('s') {
+                is_stream_stopped = true;
 
-                        let simulated_swap_data = simulate_swap(
-                            client,
-                            pool_key,
-                            market_account,
-                            paired_token_addr,
-                            &target_token_token_account,
-                            &paired_token_token_account,
-                            bought_wallet_address,
-                            token_balance,
-                        )
-                        .await?;
-                        let current_bag_value = lamports_to_sol(simulated_swap_data.minimum_amount_out);
+                print!(
+                    "\r\n\x1B[2K{}",
+                    "How much % you want to sell?\n> ".yellow().bold()
+                );
+                io::stdout().flush().unwrap();
 
-                        let profit_percentage = ((current_bag_value / token_bag_cost) - 1.00) * 100.00;
-
-                        let profit_color = if profit_percentage >= 500.0 {
-                            "yellow" // Huge profits
-                        } else if profit_percentage > 200.0 {
-                            "blue" // Good profits
-                        } else if profit_percentage > 0.0 {
-                            "green" // Low profits
-                        } else {
-                            "red" // Loss
-                        };
-
-                        let profit_str = format!("{:.2}%", profit_percentage).color(profit_color).bold();
-
-                        let print_data = format!(
-                            "\r\n\x1B[2K{}\nTokens: {} | Worth: {} SOL | Price Impact: {}% | Profit: {}",
-                            format!("--------- {} ---------", now_ms()).cyan().bold(),
-                            token_balance.to_string().purple(),
-                            format!("{:.2}", simulated_swap_data.minimum_amount_out).green().bold(),
-                            format!("{:.2}", simulated_swap_data.price_impact).blue(),
-                            profit_str
-                        );
-                        
-                        disable_raw_mode().expect("Failed to disable raw mode");
-                        println!("{}", print_data);
-                        enable_raw_mode().expect("Failed to enable raw mode");
-                        // io::stdout().flush().unwrap();
-                    },
-                    Some(key_event) = rx.recv() => {
-                        match key_event.code {
-                            KeyCode::Char('q') if key_event.modifiers == KeyModifiers::CONTROL => {
-                                let swap_instr: Arc<Vec<Instruction>> = Arc::new(
-                                    raydium::get_swap_out_instr(
-                                        client,
-                                        &bought_wallet,
-                                        &pool_key,
-                                        &paired_token_addr,
-                                        &target_token_addr,
-                                        token_balance,
-                                    )
-                                    .await?,
-                                );
-                            },
-                            KeyCode::Char('c') if key_event.modifiers == KeyModifiers::CONTROL => {
-                                // let mut stdout = io::stdout();
-
-                                // execute!(stdout, LeaveAlternateScreen).expect("Failed to leave alternate screen");
-                                disable_raw_mode().expect("Failed to disable raw mode");
-                                break;
-                            },
-                            _ => {},
+                let mut token_percentage_str_buf = String::new();
+                let mut buf_count = 0;
+                loop {
+                    if let Ok(key) = rx.try_recv() {
+                        // println!("Detected key: {:?} | {}", key, buf_count);
+                        match key {
+                            Key::Char('\n') => {
+                                if buf_count == 1 {
+                                    break;
+                                }
+                                buf_count += 1;
+                            }
+                            Key::Char(c) => token_percentage_str_buf.push(c),
+                            _ => {}
                         }
-                    },
+                    }
                 }
+                let token_percentage: f64 = match token_percentage_str_buf.parse() {
+                    Ok(token_percentage) => token_percentage,
+                    Err(e) => {
+                        eprintln!(
+                            "\r\n\x1B[2K{}: {:?}",
+                            "Failed to parse number".red().bold(),
+                            e
+                        );
+                        continue;
+                    }
+                };
+                let tokens_sell_amount: u64 = ((token_percentage / 100.0) * token_balance as f64) as u64;
+
+                println!(
+                    "{}",
+                    format!(
+                        "Selling {}% tokens ({} of {})...",
+                        token_percentage, lamports_to_sol(tokens_sell_amount), lamports_to_sol(token_balance)
+                    )
+                    .green()
+                    .bold()
+                );
+
+                let blockhash = client
+                .get_latest_blockhash_with_commitment(CommitmentConfig {
+                    commitment: CommitmentLevel::Confirmed,
+                })
+                .await
+                .unwrap()
+                .0;
+
+                let bundle_txs = match build_sell_bundle(
+                    &pda_client,
+                    bought_wallet,
+                    tokens_sell_amount,
+                    &tip_account,
+                    bribe_amount_for_sell,
+
+                    target_token_addr,
+                    paired_token_addr,
+                    pool_key,
+                    blockhash,
+                ).await {
+                    Ok(bundle_txs) => {
+                        println!("\r\n\x1B[2K{}", "Sell bundle successfully built.".blue());
+                        bundle_txs
+                    },
+                    Err(e) => {
+                        eprintln!("\r\n\x1B[2K{}: {:?}", "Failed to build sell bundle".red().bold(), e);
+                        continue;
+                    }
+                };
+
+                let broadcast_handles = mev_helpers
+                            .broadcast_bundle_to_all_engines(bundle_txs.clone())
+                            .await;
+
+                for handle in broadcast_handles {
+                    match handle.await {
+                        Ok(Ok(bundle_id)) => println!("\r\n\x1B[2K{}: {:?}", "Bundle ID from one engine".yellow(), bundle_id),
+                        Ok(Err(e)) => eprintln!("\r\n\x1B[2K{}: {:?}", "Error sending bundle".red(), e),
+                        Err(e) => eprintln!("\r\n\x1B[2K{}: {:?}", "Join error".red(), e),
+                    }
+                }
+
+                let supposed_sell_hash = bundle_txs[0].signatures[0];
+                
+                is_stream_stopped = false;
+
+                println!("\r\n\x1B[2K{}", format!("Confirming transaction \"{}\" (please wait...)", supposed_sell_hash).blue().bold());
+
+                let client_clone = pda_client.clone();
+                tokio::spawn( async move {
+                    match confirm_transaction(&client_clone, supposed_sell_hash, 1000, 120).await {
+                        Ok(confirmed_sell_tx) => {
+                            if !confirmed_sell_tx {
+                                println!("\r\n\x1B[2K{}", "Sell transaction failed!".red().bold());
+                            }
+                            println!(
+                                "\r\n\x1B[2K{} | {:?}",
+                                "Sell transaction confirmed".green().bold(),
+                                supposed_sell_hash);
+                        },
+                        Err(e) => {
+                            eprintln!("\r\n\x1B[2K{}: {:?}", "Failed to confirm sell transaction".red().bold(), e);
+                        }
+                    };
+                });
+            }
+        }
+
+        if is_stream_stopped {
+            continue;
+        }
+
+        token_balance = pda_client
+            .get_token_account_balance(&token_account_addr)
+            .await?
+            .amount
+            .parse()?;
+
+        let simulated_swap_data = simulate_swap(
+            &pda_client,
+            pool_key,
+            market_account,
+            paired_token_addr,
+            &target_token_token_account,
+            &paired_token_token_account,
+            bought_wallet_address,
+            token_balance,
+        )
+        .await?;
+        let current_bag_value = lamports_to_sol(simulated_swap_data.minimum_amount_out);
+
+        let profit_percentage = ((current_bag_value / token_bag_cost) - 1.00) * 100.00;
+
+        let profit_color = if profit_percentage >= 500.0 {
+            "yellow" // Huge profits
+        } else if profit_percentage > 200.0 {
+            "blue" // Good profits
+        } else if profit_percentage > 0.0 {
+            "green" // Low profits
+        } else {
+            "red" // Loss
+        };
+
+        let profit_str = format!("{:.2}%", profit_percentage)
+            .color(profit_color)
+            .bold();
+
+        let print_data = format!(
+            "{}\r\n\x1B[2KTokens: {} | Worth: {} SOL | Price Impact: {}% | Profit: {}",
+            format!("--------- {} ---------", now_ms()).cyan().bold(),
+            token_balance.to_string().purple(),
+            format!("{:.2}", current_bag_value).green().bold(),
+            format!("{:.2}", simulated_swap_data.price_impact).blue(),
+            profit_str
+        );
+
+        if !is_stream_stopped {
+            println!("\r\n\x1B[2K{}\r\n\x1B[2K", print_data);
+        }
     }
 
-    // let blockhash = client
-    //     .get_latest_blockhash_with_commitment(CommitmentConfig {
-    //         commitment: CommitmentLevel::Finalized,
-    //     })
-    //     .await
-    //     .unwrap()
-    //     .0;
-    // client.send_and_confirm_transaction_with_spinner_and_config(&VersionedTransaction::from(
-    //     Transaction::new_signed_with_payer(
-    //         &swap_instr,
-    //         Some(&bought_wallet.pubkey()),
-    //         &[bought_wallet],
-    //         blockhash.clone(),
-    //     ),
-    // ), CommitmentConfig {
-    //     ..Default::default()
-    // }, RpcSendTransactionConfig {
-    //     skip_preflight: true,
-    //     ..Default::default()
-    // }).await?;
+    /*
+    loop {
+        tokio::select! {
+            Some(key) = rx.recv() => {
+                println!("Wow key: {:?}", key);
+                match key {
+                    termion::event::Key::Ctrl('s') => {
+                        is_stream_stopped = true;
+
+                        print!("\r\n\x1B[2K{}", "How much % you want to sell?\n> ".yellow().bold());
+                        let number: f64 = std::io::stdin().lock().lines().next().unwrap().unwrap().parse().unwrap();
+
+                        println!("\r\n\x1B[2K{}", format!("Selling {} tokens...", number).green().bold());
+
+                        is_stream_stopped = false;
+
+                        let bundle_txs = match build_sell_bundle(
+                            &client,
+                            bought_wallet,
+                            token_balance,
+                            &tip_account,
+                            bribe_amount_for_sell,
+
+                            target_token_addr,
+                            paired_token_addr,
+                            pool_key,
+                            cached_blockhash,
+                        ).await {
+                            Ok(bundle_txs) => {
+                                println!("\r\n\x1B[2K{}", "Sell bundle successfully built.".blue());
+                                bundle_txs
+                            },
+                            Err(e) => {
+                                eprintln!("\r\n\x1B[2K{}: {:?}", "Failed to build sell bundle".red().bold(), e);
+                                continue;
+                            }
+                        };
+
+                        println!("\r\n\x1B[2K{}", "Broadcasting bundle to all engines...".yellow());
+
+                        let broadcast_handles = mev_helpers
+                            .broadcast_bundle_to_all_engines(bundle_txs.clone())
+                            .await;
+
+                        for handle in broadcast_handles {
+                            match handle.await {
+                                Ok(Ok(bundle_id)) => println!("\r\n\x1B[2K{}: {:?}", "Bundle ID from one engine".yellow(), bundle_id),
+                                Ok(Err(e)) => eprintln!("\r\n\x1B[2K{}: {:?}", "Error sending bundle".red(), e),
+                                Err(e) => eprintln!("\r\n\x1B[2K{}: {:?}", "Join error".red(), e),
+                            }
+                        }
+
+                        let supposed_sell_hash = bundle_txs[0].signatures[0];
+
+                        println!("\r\n\x1B[2K{}", format!("Confirming transaction: {}", supposed_sell_hash).blue().bold());
+
+                        let confirmed_sell_tx = match client.confirm_transaction(&supposed_sell_hash).await {
+                            Ok(confirmed_sell_tx) => confirmed_sell_tx,
+                            Err(e) => {
+                                eprintln!("\r\n\x1B[2K{}: {:?}", "Failed to confirm sell transaction".red().bold(), e);
+                                continue;
+                            }
+                        };
+                        if !confirmed_sell_tx {
+                            println!("\r\n\x1B[2K{}", "Sell transaction failed!".red().bold());
+                            continue;
+                        }
+                        println!("\r\n\x1B[2K{:#?}", confirmed_sell_tx);
+
+                        println!("\r\n\x1B[2K{}", "Successfully sold ALL tokens bag".green().bold());
+                    }
+                    _ => {}
+                }
+            },
+            _ = show_profit_tick.tick() => {
+                println!("Profit stream ?");
+                if is_stream_stopped {
+                    println!("Stream is stopped");
+                    continue;
+                }
+
+                // token_balance = client
+                //     .get_token_account_balance(&token_account_addr)
+                //     .await?
+                //     .amount
+                //     .parse()?;
+
+                let simulated_swap_data = simulate_swap(
+                    &client,
+                    pool_key,
+                    market_account,
+                    paired_token_addr,
+                    &target_token_token_account,
+                    &paired_token_token_account,
+                    bought_wallet_address,
+                    token_balance,
+                )
+                .await?;
+                let current_bag_value = lamports_to_sol(simulated_swap_data.minimum_amount_out);
+
+                let profit_percentage = ((current_bag_value / token_bag_cost) - 1.00) * 100.00;
+
+                let profit_color = if profit_percentage >= 500.0 {
+                    "yellow" // Huge profits
+                } else if profit_percentage > 200.0 {
+                    "blue" // Good profits
+                } else if profit_percentage > 0.0 {
+                    "green" // Low profits
+                } else {
+                    "red" // Loss
+                };
+
+                let profit_str = format!("{:.2}%", profit_percentage).color(profit_color).bold();
+
+                let print_data = format!(
+                    "{}\r\n\x1B[2KTokens: {} | Worth: {} SOL | Price Impact: {}% | Profit: {}",
+                    format!("--------- {} ---------", now_ms()).cyan().bold(),
+                    token_balance.to_string().purple(),
+                    format!("{:.2}", current_bag_value).green().bold(),
+                    format!("{:.2}", simulated_swap_data.price_impact).blue(),
+                    profit_str
+                );
+
+                println!("\r\n\x1B[2K{}\r\n\x1B[2K", print_data);
+            },
+            _ = blockhash_tick.tick() => {
+                println!("Getting blockhash again");
+                cached_blockhash = client
+                            .get_latest_blockhash_with_commitment(CommitmentConfig {
+                                commitment: CommitmentLevel::Confirmed,
+                            })
+                            .await.unwrap()
+                            .0;
+            }
+        }
+    }
+    */
 
     Ok(())
+}
+
+// TODO: refactor every code beloging to any sell feature. it should be within a class, etc etc
+
+pub async fn build_sell_bundle(
+    client: &RpcClient,
+    signer: &Keypair,
+    token_amount: u64,
+    tip_account: &Pubkey,
+    bribe_amount: f64,
+
+    target_token_addr: &Pubkey,
+    paired_token_addr: &Pubkey,
+    pool_key: &PoolKey,
+    cached_blockhash: Hash,
+) -> Result<Vec<VersionedTransaction>, Box<dyn Error>> {
+    let swap_instr_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+        &raydium::get_swap_out_instr(
+            &client,
+            &signer,
+            &pool_key,
+            &paired_token_addr,
+            &target_token_addr,
+            token_amount,
+        )
+        .await?,
+        Some(&signer.pubkey()),
+        &[signer],
+        cached_blockhash,
+    ));
+
+    let bribe_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+        &[transfer(
+            &signer.pubkey(),
+            &tip_account,
+            sol_to_lamports(bribe_amount),
+        )],
+        Some(&signer.pubkey()),
+        &[signer],
+        cached_blockhash,
+    ));
+
+    Ok(vec![swap_instr_tx, bribe_tx])
 }
 
 // needs refactor omfg
@@ -300,25 +581,65 @@ async fn simulate_swap(
     Ok(simulated_swap_data)
 }
 
-async fn keyboard_task(tx: tokio::sync::mpsc::UnboundedSender<KeyEvent>) {
-    enable_raw_mode().expect("Failed to enable raw mode");
-    // let mut stdout = io::stdout();
-    // execute!(stdout, EnterAlternateScreen).expect("Failed to enter alternate screen");
+fn keyboard_loop(tx: tokio::sync::mpsc::UnboundedSender<String>) {
+    let stdin = io::stdin();
+    let mut stdin = stdin.lock().keys();
 
-    loop {
-        if event::poll(Duration::from_millis(200)).expect("Failed to poll event") {
-            if let CEvent::Key(key_event) = event::read().expect("Failed to read event") {
-                tx.send(key_event).unwrap();
+    while let Some(Ok(key)) = stdin.next() {
+        println!("Key pressed: {:?}", key);
+        match key {
+            termion::event::Key::Ctrl('q') => {
+                tx.send("CTRL+Q".to_string()).unwrap();
+                break;
             }
+            _ => {}
         }
     }
-
-    // execute!(stdout, LeaveAlternateScreen).expect("Failed to leave alternate screen");
-    disable_raw_mode().expect("Failed to disable raw mode");
 }
 
 pub fn now_ms() -> DelayedFormat<StrftimeItems<'static>> {
     chrono::Local::now().format("%H:%M:%S%.3f")
+}
+
+pub fn generate_tip_account() -> Pubkey {
+    let tip_program_pubkey: Pubkey = "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"
+        .parse()
+        .unwrap();
+
+    let tip_pda_0 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_0"], &tip_program_pubkey).0;
+    let tip_pda_1 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_1"], &tip_program_pubkey).0;
+    let tip_pda_2 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_2"], &tip_program_pubkey).0;
+    let tip_pda_3 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_3"], &tip_program_pubkey).0;
+    let tip_pda_4 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_4"], &tip_program_pubkey).0;
+    let tip_pda_5 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_5"], &tip_program_pubkey).0;
+    let tip_pda_6 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_6"], &tip_program_pubkey).0;
+    let tip_pda_7 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_7"], &tip_program_pubkey).0;
+
+    let tip_accounts = vec![
+        tip_pda_0, tip_pda_1, tip_pda_2, tip_pda_3, tip_pda_4, tip_pda_5, tip_pda_6, tip_pda_7,
+    ];
+
+    let tip_account: Pubkey = tip_accounts[thread_rng().gen_range(0..tip_accounts.len())];
+
+    return tip_account;
+}
+
+pub async fn confirm_transaction(client: &RpcClient, hash: Signature, delay: u64, tries: u64) -> Result<bool, Box<dyn Error>> {
+    let mut tries = tries;
+    let delay = delay;
+
+    while tries > 0 {
+        let confirmed_tx = client.confirm_transaction(&hash).await?;
+        if confirmed_tx {
+            return Ok(true);
+        }
+
+        tries -= 1;
+
+        thread::sleep(Duration::from_millis(delay));
+    }
+
+    return Ok(false);
 }
 
 /*

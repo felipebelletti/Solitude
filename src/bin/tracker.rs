@@ -1,59 +1,38 @@
-use chrono::{DateTime, TimeZone, Utc};
-use jito::{
-    client_interceptor::ClientInterceptor, cluster_data_impl::ClusterDataImpl, grpc_connect,
-    BundleId, SearcherClient, SearcherClientError, SearcherClientResult,
-};
-use jito_protos::{
-    auth::auth_service_client::AuthServiceClient,
-    bundle::Bundle,
-    searcher::{self, searcher_service_client::SearcherServiceClient},
-};
-use rand::{
-    distributions::{Alphanumeric, DistString},
-    thread_rng, Rng,
-};
-use raydium_amm::instruction::{self, simulate_swap_base_in};
-use raydium_contract_instructions::{
-    amm_instruction::{swap_base_in as amm_swap, ID as ammProgramID},
-    stable_instruction::{swap_base_in as stable_swap, ID as stableProgramID},
-};
-use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
+
+
+
+
+
+
+
 use solana_program::{
-    instruction::{CompiledInstruction, Instruction},
-    program_option::COption,
-    system_instruction,
+    instruction::{CompiledInstruction},
 };
 use solana_sdk::{
     bs58,
-    commitment_config::{CommitmentConfig, CommitmentLevel},
-    native_token::sol_to_lamports,
     pubkey::Pubkey,
-    signature::{Keypair, Signature, Signer},
-    system_instruction::transfer,
-    transaction::{Transaction, VersionedTransaction},
+    signature::{Keypair},
 };
-use solana_transaction_status::UiTransactionEncoding;
-use solitude::{config, jito, raydium};
-use spl_associated_token_account::get_associated_token_address;
-use spl_memo::build_memo;
-use spl_token::state::is_initialized_account;
+
+use solitude::{jito};
+
+
+
 use std::{
     collections::HashMap,
     error::Error,
-    io::{self, Write},
     panic::{self, PanicInfo},
-    process::{self, exit},
-    result,
+    process::{self},
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration},
 };
-use tonic::{service::interceptor::InterceptedService, transport::Channel};
 
-use solitude::utils::get_token_authority;
+
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -68,9 +47,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let block_engine_url = "https://frankfurt.mainnet.block-engine.jito.wtf";
     let rpc_pubsub_addr = "http://127.0.0.1:8899/";
-    let rpc_pda_url = "https://tame-ancient-mountain.solana-mainnet.quiknode.pro/6a9a95bf7bbb108aea620e7ee4c1fd5e1b67cc62";
+    let _rpc_pda_url = "https://tame-ancient-mountain.solana-mainnet.quiknode.pro/6a9a95bf7bbb108aea620e7ee4c1fd5e1b67cc62";
 
-    let (mut searcher_client, _) = jito::get_searcher_client(
+    let (searcher_client, _) = jito::get_searcher_client(
         &jito_auth_keypair,
         &graceful_panic(None),
         block_engine_url,
@@ -159,7 +138,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         {
                             let account_indexes_used = &instr.accounts;
 
-                            let swap_grouped_accounts = account_indexes_used
+                            let _swap_grouped_accounts = account_indexes_used
                                 .iter()
                                 .filter_map(|&index| accounts.get(index as usize))
                                 .collect::<Vec<&Pubkey>>();

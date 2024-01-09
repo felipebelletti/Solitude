@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::Path, fs::File, io::{self, BufRead, Read}, error::Error};
+use std::{collections::HashMap, fs::File, io::{Read}};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Wallet {
@@ -8,6 +8,7 @@ pub struct Wallet {
     pub bribe_amount: f64,
     pub spam: bool,
     pub filter_liquidity: bool,
+    pub bribe_amount_for_sell: f64,
 }
 
 pub fn read_from_wallet_file() -> Wallet {
