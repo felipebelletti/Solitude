@@ -3386,7 +3386,7 @@ impl Processor {
         Ok(())
     }
 
-    fn simulate_pool_info(
+    pub fn simulate_pool_info(
         program_id: &Pubkey,
         accounts: &[AccountInfo],
     ) -> Result<GetPoolData, ProgramError> {

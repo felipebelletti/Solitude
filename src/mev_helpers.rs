@@ -101,7 +101,7 @@ impl MevHelpers {
             tokio::spawn(async move {
                 while let Some(bundle_result) = bundle_results_receiver.recv().await {
                     if let Err(e) = tx_clone.send(bundle_result).await {
-                        eprintln!("Failed to send bundle result: {}", e);
+                        eprintln!("Failed to send bundle result (into our own channel): {}", e);
                         break;
                     }
                 }
