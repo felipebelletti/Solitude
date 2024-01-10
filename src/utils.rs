@@ -8,6 +8,7 @@ use openssl::symm::Crypter;
 use openssl::symm::Mode;
 use rand::thread_rng;
 use rand::Rng;
+use raydium_amm::state::GetPoolData;
 use solana_program::native_token::lamports_to_sol;
 use solana_program::native_token::sol_to_lamports;
 use solana_program::system_instruction::transfer;
@@ -16,6 +17,7 @@ use solana_sdk::commitment_config::CommitmentLevel;
 use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
 use solana_sdk::transaction::VersionedTransaction;
+use tokio::time::sleep;
 use std::env;
 use std::error::Error;
 use std::io::BufRead;
@@ -308,8 +310,14 @@ pub async fn sell_stream(
 
         let t0 = time::Instant::now();
         token_balance = client
-            .get_token_account_balance(&token_account_addr)
+            .get_token_account_balance_with_commitment(
+                &token_account_addr,
+                CommitmentConfig {
+                    commitment: CommitmentLevel::Processed,
+                },
+            )
             .await?
+            .value
             .amount
             .parse()?;
         let t1_token_balance = time::Instant::now();
@@ -324,7 +332,6 @@ pub async fn sell_stream(
             &paired_token_token_account,
             bought_wallet_address,
             token_balance,
-
             &amm_account,
             &amm_authority_account,
             &market_info_account,
@@ -335,14 +342,14 @@ pub async fn sell_stream(
         .await?;
         let t3_simulate_swap = time::Instant::now();
 
-        println!(
-            "Took {}ms to get token balance",
-            t1_token_balance.duration_since(t0).as_millis()
-        );
-        println!(
-            "Took {}ms to simulate swap",
-            t3_simulate_swap.duration_since(t2).as_millis()
-        );
+        // println!(
+        //     "Took {}ms to get token balance",
+        //     t1_token_balance.duration_since(t0).as_millis()
+        // );
+        // println!(
+        //     "Took {}ms to simulate swap",
+        //     t3_simulate_swap.duration_since(t2).as_millis()
+        // );
 
         let current_bag_value = lamports_to_sol(simulated_swap_data.minimum_amount_out);
 
@@ -497,7 +504,11 @@ async fn simulate_swap(
         ),
         (&target_token_token_account, false, &mut user_source_account),
         (&paired_token_token_account, false, &mut user_dest_account),
-        (&bought_wallet_address, true, &mut user_source_owner_account_clone),
+        (
+            &bought_wallet_address,
+            true,
+            &mut user_source_owner_account_clone,
+        ),
     ];
     let accounts_slice: &mut [(&Pubkey, bool, &mut solana_sdk::account::Account)] =
         accounts.as_mut_slice();
@@ -565,7 +576,7 @@ pub async fn confirm_transaction(
 
         tries -= 1;
 
-        thread::sleep(Duration::from_millis(delay));
+        sleep(Duration::from_millis(delay)).await;
     }
 
     return Ok(false);
@@ -620,41 +631,40 @@ fn get_exiting_menu_entries() -> &'static [&'static str] {
     &["Liquidity Sniping", "Bundle Spamming", "Sell Stream"]
 }
 
+pub async fn get_pool_data(client: &RpcClient, pool_key: &PoolKey, market_account_pubkey: &Pubkey) -> Result<GetPoolData, Box<dyn Error>> {
+    let mut amm_account = client.get_account(&pool_key.id).await?;
+        let mut amm_authority_account = client.get_account(&pool_key.authority).await?;
+        let mut open_orders_account = client.get_account(&pool_key.open_orders).await?;
+        let mut coin_vault_account = client.get_account(&pool_key.base_vault).await?;
+        let mut pc_vault_account = client.get_account(&pool_key.quote_vault).await?;
+        let mut lp_mint_account = client.get_account(&pool_key.lp_mint).await?;
+        let mut market_info_account = client.get_account(&market_account_pubkey).await?;
+        let mut market_event_queue_account = client.get_account(&pool_key.market_event_queue).await?;
+    
+        let mut accounts = vec![
+            (&pool_key.id, false, &mut amm_account),
+            (&pool_key.authority, false, &mut amm_authority_account),
+            (&pool_key.open_orders, false, &mut open_orders_account),
+            (&pool_key.base_vault, false, &mut coin_vault_account),
+            (&pool_key.quote_vault, false, &mut pc_vault_account),
+            (&pool_key.lp_mint, false, &mut lp_mint_account),
+            (&market_account_pubkey, false, &mut market_info_account),
+            (&pool_key.market_event_queue, false, &mut market_event_queue_account)
+        ];
+        let accounts_slice: &mut [(&Pubkey, bool, &mut solana_sdk::account::Account)] = accounts.as_mut_slice();
+    
+        let account_infos = create_is_signer_account_infos(accounts_slice);
+    
+        let pool_info = Processor::simulate_pool_info(
+            &raydium_contract_instructions::amm_instruction::ID,
+            &account_infos,
+        )?;
+
+        Ok(pool_info)
+    
+        // GetPoolData: {"status":6,"coin_decimals":9,"pc_decimals":9,"lp_decimals":9,"pool_pc_amount":1827059158131,"pool_coin_amount":223374915011324050,"pnl_pc_amount":0,"pnl_coin_amount":0,"pool_lp_supply":342976073995411,"pool_open_time":1703797327,"amm_id":"9Rc5LrMNdjxePyd7xjZiSTAJURpzoi6GjiCPqnxQopdD"}
+}
+
 /*
 schema to get pool open time (its within pool_info data)
-let mut amm_account = client.get_account(&pool_key.id).await?;
-    let mut amm_authority_account = client.get_account(&pool_key.authority).await?;
-    let mut open_orders_account = client.get_account(&pool_key.open_orders).await?;
-    let mut coin_vault_account = client.get_account(&pool_key.base_vault).await?;
-    let mut pc_vault_account = client.get_account(&pool_key.quote_vault).await?;
-    let mut lp_mint_account = client.get_account(&lp_mint_addr).await?;
-    let mut market_info_account = client.get_account(&market_account_pubkey).await?;
-    let mut market_event_queue_account = client.get_account(&pool_key.market_event_queue).await?;
-
-    let mut accounts = vec![
-        (&pool_key.id, false, &mut amm_account),
-        (&pool_key.authority, false, &mut amm_authority_account),
-        (&pool_key.open_orders, false, &mut open_orders_account),
-        (&pool_key.base_vault, false, &mut coin_vault_account),
-        (&pool_key.quote_vault, false, &mut pc_vault_account),
-        (&lp_mint_addr, false, &mut lp_mint_account),
-        (&market_account_pubkey, false, &mut market_info_account),
-        (&pool_key.market_event_queue, false, &mut market_event_queue_account)
-    ];
-    let accounts_slice: &mut [(&Pubkey, bool, &mut solana_sdk::account::Account)] = accounts.as_mut_slice();
-
-    let account_infos = create_is_signer_account_infos(accounts_slice);
-
-    let pool_info = Processor::process_simulate_info(
-        &raydium_contract_instructions::amm_instruction::ID,
-        &account_infos,
-        SimulateInstruction {
-            param: 0,
-            ..Default::default()
-        },
-    )?;
-
-    println!("{:#?}", pool_info);
-
-    GetPoolData: {"status":6,"coin_decimals":9,"pc_decimals":9,"lp_decimals":9,"pool_pc_amount":1827059158131,"pool_coin_amount":223374915011324050,"pnl_pc_amount":0,"pnl_coin_amount":0,"pool_lp_supply":342976073995411,"pool_open_time":1703797327,"amm_id":"9Rc5LrMNdjxePyd7xjZiSTAJURpzoi6GjiCPqnxQopdD"}
     */

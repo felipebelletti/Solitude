@@ -1,8 +1,10 @@
 use chrono::{DateTime, TimeZone, Utc};
 
+use colored::Colorize;
 use jito_protos::bundle::bundle_result;
 use rand::{thread_rng, Rng};
 
+use raydium_amm::state::GetPoolData;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_program::{
     instruction::{CompiledInstruction, Instruction},
@@ -36,7 +38,7 @@ use std::{
         Arc,
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{self, Duration, SystemTime, UNIX_EPOCH},
 };
 
 use std::fmt::{Display, Formatter};
@@ -73,6 +75,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let rpc_pubsub_addr = "http://127.0.0.1:8899/";
     let rpc_pda_url = "https://tame-ancient-mountain.solana-mainnet.quiknode.pro/6a9a95bf7bbb108aea620e7ee4c1fd5e1b67cc62";
+    // let rpc_pda_url = "https://frankfurt.mainnet.rpc.jito.wtf/?access-token=a8444833-45dc-4e90-acff-4bc30267edba";
 
     let rpc_client = Arc::new(RpcClient::new(rpc_pubsub_addr.to_string()));
     let rpc_pda_client = Arc::new(RpcClient::new(rpc_pda_url.to_string()));
@@ -118,7 +121,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     &pool_key,
                     buy_amount,
                     wallet.bribe_amount_for_sell,
-                ).await?;
+                )
+                .await?;
             }
             "Bundle Spamming" => {
                 println!("todo");
@@ -144,7 +148,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     &pool_key,
                     buy_amount,
                     wallet.bribe_amount_for_sell,
-                ).await?;
+                )
+                .await?;
             }
             _ => {
                 println!("Invalid choice");
@@ -225,37 +230,44 @@ async fn mempool_snipe(
     let mut bundle_results_ch = mev_helpers.listen_for_bundle_results().await;
     let (blockhash_tx, mut blockhash_rx) = mpsc::unbounded_channel();
 
+    let mut bundle_results_on_queue = 0;
+    let mut sniping_success = false;
+
     println!("~ Listenning for mempool activity from dev's wallet");
 
     loop {
         tokio::select! {
             maybe_mempool_tx = mempool_ch.recv() => {
                 if let Some(mempool_tx) = maybe_mempool_tx {
+                    let t0 = time::Instant::now();
                     let swap_instr = Arc::clone(&swap_instr);
                     let main_keypair = Arc::clone(&main_keypair);
-                    let mev_helpers = Arc::clone(&mev_helpers); // Clone Arc of MevHelpers
+                    let mev_helpers = Arc::clone(&mev_helpers);
                     let wallet = Arc::clone(&wallet);
                     let cached_blockhash = cached_blockhash.clone();
-                    let tip_account = tip_account.clone(); // Assuming tip_account is cloneable
+                    let tip_account = tip_account.clone();
 
                     tokio::spawn(async move {
                         process_transaction(mempool_tx, swap_instr, main_keypair, mev_helpers, cached_blockhash, &wallet, &tip_account).await;
+                        println!("process_transaction took {}ms", t0.elapsed().as_millis());
                     });
+                    bundle_results_on_queue += 1;
                 } else {
                     println!("Mempool channel was disconnected, aborting...");
                     break;
                 }
             }
             maybe_bundle_result = bundle_results_ch.recv() => {
-                // TODO: might be optimized if used in a new thread context but then I wont have access to the stop_parsing var
                 if let Some(bundle_result) = maybe_bundle_result {
                     match bundle_result.result {
                         Some(bundle_result::Result::Accepted(_accepted_result)) => {
                             println!("\x1b[92m{} | Bundle {} was ACCEPTED on slot {} by validator {}\x1b[0m", utils::now_ms(), bundle_result.bundle_id, _accepted_result.slot, _accepted_result.validator_identity);
-                            break;
+                            sniping_success = true;
+                            bundle_results_on_queue -= 1;
                         },
                         Some(bundle_result::Result::Rejected(_rejected_result)) => {
                             println!("{} | Bundle {} was rejected, reason: {:?}", utils::now_ms(), bundle_result.bundle_id, _rejected_result.reason.expect("!reason"));
+                            bundle_results_on_queue -= 1;
                         },
                         Some(bundle_result::Result::Processed(_processed_result)) => {
                             println!("{} | Bundle {} was processed on slot {} by validator {} with bundle index of {}", utils::now_ms(), bundle_result.bundle_id, _processed_result.slot, _processed_result.validator_identity, _processed_result.bundle_index);
@@ -270,6 +282,11 @@ async fn mempool_snipe(
                             println!("{} | Bundle {} was dropped due to an internal error (\"none\" was returned). thats awkward and should not happen", utils::now_ms(), bundle_result.bundle_id);
                         }
                     }
+
+                    if bundle_results_on_queue <= 0 && sniping_success {
+                        break;
+                    }
+
                     continue;
                 }
                 println!("Bundle results channel was disconnected. Restart required.");
@@ -308,14 +325,17 @@ async fn process_transaction(
     wallet: &Wallet,
     tip_account: &Pubkey,
 ) {
+    let t0_0 = time::Instant::now();
     let sig = mempool_tx.signatures[0];
 
     if wallet.filter_liquidity {
+        let t0 = time::Instant::now();
         let is_liquidity_tx = mempool_tx
             .message
             .instructions()
             .iter()
             .any(|instr| instr.data.starts_with(&[0x01]));
+        println!("{} - Filtered in {}ms", sig, t0.elapsed().as_millis());
 
         if !is_liquidity_tx {
             println!("{} - Filtered (not an addLiquidity tx)", sig);
@@ -324,13 +344,20 @@ async fn process_transaction(
     }
     println!("Backrunning transaction: {}", sig);
 
+    let t0 = time::Instant::now();
     let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
         &swap_instr,
         Some(&main_keypair.pubkey()),
         &[main_keypair.as_ref()],
         cached_blockhash,
     ));
+    println!(
+        "{} - Backrun swap tx built in {}ms",
+        sig,
+        t0.elapsed().as_millis()
+    );
 
+    let t0 = time::Instant::now();
     let backrun_bribe_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
         &[transfer(
             &main_keypair.pubkey(),
@@ -341,6 +368,11 @@ async fn process_transaction(
         &[main_keypair.as_ref()],
         cached_blockhash,
     ));
+    println!(
+        "{} - Backrun bribe tx built in {}ms",
+        sig,
+        t0.elapsed().as_millis()
+    );
 
     let bundle_txs: Vec<VersionedTransaction> = vec![mempool_tx, backrun_swap_tx, backrun_bribe_tx];
 
@@ -350,7 +382,7 @@ async fn process_transaction(
 
     for handle in broadcast_handles {
         match handle.await {
-            Ok(Ok(bundle_id)) => println!("Bundle ID from one engine: {:?}", bundle_id),
+            Ok(Ok(bundle_id)) => println!("Bundle ID received from one JITO Engine: {:?} | Took: {}ms process_transaction->broadcast_handles", bundle_id, t0_0.elapsed().as_millis()),
             Ok(Err(e)) => eprintln!("Error sending bundle: {:?}", e),
             Err(e) => eprintln!("Join error: {:?}", e),
         }
@@ -423,6 +455,21 @@ async fn get_required_token_data(
                 &paired_addr.to_string()
             )
         });
+
+    // if let Ok(get_pool_data) =
+    //     utils::get_pool_data(&rpc_pda_client, &pool_key, &market_account_pubkey).await
+    // {
+    //     let GetPoolData {
+    //         pool_open_time,
+    //         ..
+    //     } = get_pool_data;
+
+    //     let current_timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+    //     let opens_at_datetime = chrono::Local.timestamp(pool_open_time as i64, 0);
+
+    //     println!("{}", format!("Pool opens at {} (in {} seconds) (GMT-0)", opens_at_datetime, pool_open_time - current_timestamp).yellow());
+    // }
 
     Ok(EssentialTokenData {
         target_addr,
