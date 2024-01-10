@@ -1,22 +1,7 @@
+use solana_program::instruction::CompiledInstruction;
+use solana_sdk::{bs58, pubkey::Pubkey, signature::Keypair};
 
-
-
-
-
-
-
-use solana_program::{
-    instruction::{CompiledInstruction},
-};
-use solana_sdk::{
-    bs58,
-    pubkey::Pubkey,
-    signature::{Keypair},
-};
-
-use solitude::{jito};
-
-
+use solitude::{jito, utils};
 
 use std::{
     collections::HashMap,
@@ -28,11 +13,8 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    time::{Duration},
+    time::Duration,
 };
-
-
-
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -60,9 +42,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let searcher_client = Arc::new(searcher_client);
 
     // TODO: read from tracker-wallets.jsonl
-    let watch_mempool_addresses: Vec<Pubkey> = vec![Pubkey::from_str(
-        "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
-    )?];
+    let watch_mempool_addresses: Vec<Pubkey> = vec![
+        Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?,
+        Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")?,
+    ];
 
     let mut mempool_ch = searcher_client
         .subscribe_mempool_programs(
@@ -115,7 +98,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Pubkey::from_str("bjEf4LPBqwGfn8xGfSToy7VUanQeT1EifEwZDopHk9Y")?,
         "detetive",
     );
-    let ignore_unknown_callers = false;
+    let ignore_unknown_callers = true;
 
     loop {
         while let Some(txs) = mempool_ch.recv().await {
@@ -128,6 +111,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let accounts: &[Pubkey] = mempool_tx.message.static_account_keys();
                     let signer = accounts[0];
                     let instr_chain = mempool_tx.message.instructions();
+
+                    if instr_chain.len() == 2 && hex::encode(instr_chain[1].data.clone()).starts_with("0006") {
+                        println!("Alpha launch detected ({})", hash);
+                        utils::tell(format!("Alpha launch detected ({})", hash));
+                        return;
+                    }
 
                     for instr in instr_chain {
                         let instr_data_hex = hex::encode(instr.data.clone());
@@ -149,7 +138,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             {
                                 Some(instr) => instr,
                                 None => {
-                                    println!("Could not get associated_account_instr ({})", hash);
+                                    // println!("Could not get associated_account_instr ({})", hash);
                                     return;
                                 }
                             };
@@ -174,13 +163,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         return;
                                     }
                                     "unknown"
-                                },
+                                }
                             };
                             println!(
-                                "{} is being sniped by {} ({}) | {}",
+                                "{} is getting sniped by {} ({}) | {}",
                                 target_token_address, signer, person, hash
                             );
-                            // println!("> Sniping activity detected\nSigner: {}\nHash: {}\nTarget: {}\nData: {}\nSwap Input Accounts: {:#?}", signer, hash, target_token_address, instr_data_hex, swap_grouped_accounts);
                         }
                     }
                 });
@@ -202,7 +190,7 @@ pub fn graceful_panic(callback: Option<fn(&PanicInfo)>) -> Arc<AtomicBool> {
                 f(panic_info);
             }
             exit.store(true, Ordering::Relaxed);
-            println!("exiting process");
+            println!("Disconnecting from JITO relayer...");
             // let other loops finish up
             std::thread::sleep(Duration::from_secs(5));
             // invoke the default handler and exit the process
