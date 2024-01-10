@@ -62,10 +62,10 @@ impl MevHelpers {
                 .subscribe_mempool_programs(
                     watch_mempool_addresses,
                     vec![
-                        // "amsterdam".to_string(),
-                        // "frankfurt".to_string(),
-                        // "ny".to_string(),
-                        // "tokyo".to_string(),
+                        "amsterdam".to_string(),
+                        "frankfurt".to_string(),
+                        "ny".to_string(),
+                        "tokyo".to_string(),
                     ],
                     1024,
                 )
@@ -134,7 +134,7 @@ pub fn graceful_panic(callback: Option<fn(&PanicInfo)>) -> Arc<AtomicBool> {
                 f(panic_info);
             }
             exit.store(true, Ordering::Relaxed);
-            println!("exiting process");
+            println!("Disconnecting from JITO relayer...");
             // let other loops finish up
             std::thread::sleep(Duration::from_secs(5));
             // invoke the default handler and exit the process
