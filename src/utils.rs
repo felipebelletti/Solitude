@@ -123,7 +123,7 @@ pub async fn sell_stream(
             None => {
                 println!(
                     "\r\n\x1B[2K{}",
-                    "No token account found for target token".red().bold()
+                    "No token account found for target token (if you just sniped some token, just wait a little bit)".red().bold()
                 );
                 continue;
             }
@@ -193,6 +193,8 @@ pub async fn sell_stream(
             }
         }
     });
+
+    // println!("Starting loop");
 
     loop {
         if let Ok(key) = rx.try_recv() {
@@ -347,6 +349,7 @@ pub async fn sell_stream(
             continue;
         }
 
+        // println!("Getting token balance...");
         let t0 = time::Instant::now();
         token_balance = client
             .get_token_account_balance_with_commitment(
@@ -360,6 +363,8 @@ pub async fn sell_stream(
             .amount
             .parse()?;
         let t1_token_balance = time::Instant::now();
+
+        // println!("Simulating swap...");
 
         let t2 = time::Instant::now();
         let simulated_swap_data = simulate_swap(
@@ -488,17 +493,37 @@ async fn simulate_swap(
 ) -> Result<GetSwapBaseInData, Box<dyn Error>> {
     // let mut amm_account = client.get_account(&pool_key.id).await?;
     // let mut amm_authority_account = client.get_account(&pool_key.authority).await?;
-    let mut open_orders_account = client.get_account(&pool_key.open_orders).await?;
-    let mut target_orders_account = client.get_account(&pool_key.target_orders).await?;
-    let mut coin_vault_account = client.get_account(&pool_key.base_vault).await?;
-    let mut pc_vault_account = client.get_account(&pool_key.quote_vault).await?;
-    let mut lp_mint_account = client.get_account(&pool_key.lp_mint).await?;
+    let mut open_orders_account = client.get_account_with_commitment(&pool_key.open_orders, CommitmentConfig {
+        commitment: CommitmentLevel::Processed,
+    }).await?.value.unwrap();
+    let mut target_orders_account = client.get_account_with_commitment(&pool_key.target_orders, CommitmentConfig {
+        commitment: CommitmentLevel::Processed,
+    }).await?.value.unwrap();
+    let mut coin_vault_account = client.get_account_with_commitment(&pool_key.base_vault, CommitmentConfig {
+        commitment: CommitmentLevel::Processed,
+    }).await?.value.unwrap();
+    let mut pc_vault_account = client.get_account_with_commitment(&pool_key.quote_vault, CommitmentConfig {
+        commitment: CommitmentLevel::Processed,
+    }).await?.value.unwrap();
+    let mut lp_mint_account = client.get_account_with_commitment(&pool_key.lp_mint, CommitmentConfig {
+        commitment: CommitmentLevel::Processed,
+    }).await?.value.unwrap();
 
-    // let mut market_program_account = client.get_account(&pool_key.market_program_id).await?;
-    // let mut market_info_account = client.get_account(&market_account).await?;
-    // let mut market_event_queue_account = client.get_account(&pool_key.market_event_queue).await?;
+    let mut user_source_account = loop {
+        match client.get_account_with_commitment(&target_token_token_account, CommitmentConfig {
+            commitment: CommitmentLevel::Processed,
+        }).await?.value {
+            Some(user_source_account) => break user_source_account,
+            None => {
+                println!(
+                    "\r\n\x1B[2K{}",
+                    "No token account found for target token (if you just sniped some token, just wait a little bit)".red().bold()
+                );
+                continue;
+            }
+        };
+    };
 
-    let mut user_source_account = client.get_account(&target_token_token_account).await?;
     let mut user_dest_account = Account::new(1, 165, &spl_token::id());
 
     user_dest_account.data = {
@@ -513,7 +538,7 @@ async fn simulate_swap(
         data
     };
 
-    // let mut user_source_owner_account = client.get_account(&bought_wallet_address).await?;
+    // println!("Accounts loaded into swap-sim...");
 
     let mut amm_account_clone = amm_account.clone();
     let mut amm_authority_account_clone = amm_authority_account.clone();
@@ -553,6 +578,8 @@ async fn simulate_swap(
         accounts.as_mut_slice();
 
     let account_infos = create_is_signer_account_infos(accounts_slice);
+
+    // println!("Simulating swap base in...");
 
     let simulated_swap_data = Processor::simulate_swap_base_in(
         &raydium_contract_instructions::amm_instruction::ID,
