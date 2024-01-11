@@ -261,7 +261,7 @@ async fn spam_bundle_snipe(
     let mut bundle_results_ch = mev_helpers.listen_for_bundle_results().await;
     let (blockhash_tx, mut blockhash_rx) = mpsc::unbounded_channel();
     let mut blockhash_tick = tokio::time::interval(Duration::from_secs(5));
-    let mut spam_tick = tokio::time::interval(Duration::from_millis(250));
+    let mut spam_tick = tokio::time::interval(Duration::from_millis(500));
     let tip_accounts = utils::get_tip_accounts();
 
     let static_swap_instr: Arc<Vec<Instruction>> = Arc::new(
@@ -278,72 +278,57 @@ async fn spam_bundle_snipe(
 
     loop {
         tokio::select! {
-            Some(mempool_txs) = mempool_ch.recv() => {
-                for mempool_tx in mempool_txs {
-                    let t0 = time::Instant::now();
-                    let swap_instr = Arc::clone(&static_swap_instr);
-                    let main_keypair = Arc::clone(&main_keypair);
-                    let mev_helpers = Arc::clone(&mev_helpers);
-                    let wallet = Arc::clone(&wallet);
-                    let cached_blockhash = cached_blockhash.clone();
-                    let tip_account = tip_accounts[0];
+            _ = spam_tick.tick() => {
+                let t0 = time::Instant::now();
+                println!("{} - Backrun swap tx built in {}ms", utils::now_ms(), t0.elapsed().as_millis());
 
-                    tokio::spawn(async move {
-                        process_transaction(mempool_tx, swap_instr, main_keypair.clone(), mev_helpers.clone(), cached_blockhash.clone(), &wallet, &tip_account).await;
-                    });
+                let cached_blockhash = rpc_client
+                    .get_latest_blockhash_with_commitment(CommitmentConfig {
+                        commitment: CommitmentLevel::Confirmed,
+                    })
+                    .await.unwrap()
+                    .0;
+
+                let t0 = time::Instant::now();
+                let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+                    &static_swap_instr,
+                    Some(&main_keypair.pubkey()),
+                    &[main_keypair.as_ref()],
+                    cached_blockhash,
+                ));
+
+                let t0 = time::Instant::now();
+                let random_tip_account = tip_accounts.choose(&mut thread_rng()).unwrap();
+                let backrun_bribe_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+                    &[transfer(
+                        &main_keypair.pubkey(),
+                        &random_tip_account,
+                        sol_to_lamports(wallet.bribe_amount),
+                    )],
+                    Some(&main_keypair.pubkey()),
+                    &[main_keypair.as_ref()],
+                    cached_blockhash,
+                ));
+                // println!("{} - Backrun bribe tx built in {}ms", utils::now_ms(), t0.elapsed().as_millis());
+
+                let bundle_txs: Vec<VersionedTransaction> = vec![backrun_swap_tx, backrun_bribe_tx];
+
+                let broadcast_handles = mev_helpers.broadcast_bundle_to_all_engines(bundle_txs).await;
+
+                for handle in broadcast_handles {
+                    match handle.await {
+                        Ok(Ok(bundle_id)) => println!("{} | Bundle ID received from one JITO Engine: {:?} (blockhash: {})", utils::now_ms(), bundle_id, cached_blockhash),
+                        Ok(Err(e)) => eprintln!("Error sending bundle: {:?}", e),
+                        Err(e) => eprintln!("Join error: {:?}", e),
+                    }
                 }
             }
-            // _ = spam_tick.tick() => {
-            //     let t0 = time::Instant::now();
-            //     println!("{} - Backrun swap tx built in {}ms", utils::now_ms(), t0.elapsed().as_millis());
-
-            //     let cached_blockhash = rpc_client
-            //         .get_latest_blockhash_with_commitment(CommitmentConfig {
-            //             commitment: CommitmentLevel::Confirmed,
-            //         })
-            //         .await.unwrap()
-            //         .0;
-
-            //     let t0 = time::Instant::now();
-            //     let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-            //         &static_swap_instr,
-            //         Some(&main_keypair.pubkey()),
-            //         &[main_keypair.as_ref()],
-            //         cached_blockhash,
-            //     ));
-
-            //     let t0 = time::Instant::now();
-            //     let random_tip_account = tip_accounts.choose(&mut thread_rng()).unwrap();
-            //     let backrun_bribe_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-            //         &[transfer(
-            //             &main_keypair.pubkey(),
-            //             &random_tip_account,
-            //             sol_to_lamports(wallet.bribe_amount),
-            //         )],
-            //         Some(&main_keypair.pubkey()),
-            //         &[main_keypair.as_ref()],
-            //         cached_blockhash,
-            //     ));
-            //     // println!("{} - Backrun bribe tx built in {}ms", utils::now_ms(), t0.elapsed().as_millis());
-
-            //     let bundle_txs: Vec<VersionedTransaction> = vec![backrun_swap_tx, backrun_bribe_tx];
-
-            //     let broadcast_handles = mev_helpers.broadcast_bundle_to_all_engines(bundle_txs).await;
-
-            //     for handle in broadcast_handles {
-            //         match handle.await {
-            //             Ok(Ok(bundle_id)) => println!("{} | Bundle ID received from one JITO Engine: {:?} (blockhash: {})", utils::now_ms(), bundle_id, cached_blockhash),
-            //             Ok(Err(e)) => eprintln!("Error sending bundle: {:?}", e),
-            //             Err(e) => eprintln!("Join error: {:?}", e),
-            //         }
-            //     }
-            // }
             maybe_bundle_result = bundle_results_ch.recv() => {
                 if let Some(bundle_result) = maybe_bundle_result {
                     match bundle_result.result {
                         Some(bundle_result::Result::Accepted(_accepted_result)) => {
                             println!("\x1b[92m{} | Bundle {} was ACCEPTED on slot {} by validator {}\x1b[0m", utils::now_ms(), bundle_result.bundle_id, _accepted_result.slot, _accepted_result.validator_identity);
-                            // break;
+                            break;
                         },
                         Some(bundle_result::Result::Rejected(_rejected_result)) => {
                             println!("{} | Bundle {} was rejected, reason: {:?}", utils::now_ms(), bundle_result.bundle_id, _rejected_result.reason.expect("!reason"));
@@ -373,7 +358,7 @@ async fn spam_bundle_snipe(
                 tokio::spawn(async move {
                     let new_blockhash = client_clone
                         .get_latest_blockhash_with_commitment(CommitmentConfig {
-                            commitment: CommitmentLevel::Processed,
+                            commitment: CommitmentLevel::Confirmed,
                         })
                         .await.unwrap()
                         .0;
