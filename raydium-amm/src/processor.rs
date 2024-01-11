@@ -3386,7 +3386,7 @@ impl Processor {
         Ok(())
     }
 
-    fn simulate_pool_info(
+    pub fn simulate_pool_info(
         program_id: &Pubkey,
         accounts: &[AccountInfo],
     ) -> Result<GetPoolData, ProgramError> {
@@ -3517,7 +3517,7 @@ impl Processor {
         return Ok(pool_info_data);
     }
 
-    fn simulate_swap_base_in(
+    pub fn simulate_swap_base_in(
         program_id: &Pubkey,
         accounts: &[AccountInfo],
         simulate: SimulateInstruction,
@@ -3711,7 +3711,7 @@ impl Processor {
                             .checked_mul(1000000)
                             .unwrap()
                             .checked_div(swap_price_before)
-                            .unwrap();
+                            .unwrap_or_default();
                 }
                 SwapDirection::PC2Coin => {
                     // pc -> coin, need cancel sell order
@@ -3740,7 +3740,7 @@ impl Processor {
         return Ok(swap_base_in);
     }
 
-    fn simulate_swap_base_out(
+    pub fn simulate_swap_base_out(
         program_id: &Pubkey,
         accounts: &[AccountInfo],
         simulate: SimulateInstruction,

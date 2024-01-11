@@ -1,7 +1,6 @@
 use std::{
     cmp::min,
-    net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr},
-    str::FromStr,
+    net::{IpAddr, Ipv4Addr},
 };
 
 use bincode::serialize;
@@ -16,7 +15,6 @@ use jito_protos::{
         Meta as ProtoMeta, Packet as ProtoPacket, PacketBatch as ProtoPacketBatch,
         PacketFlags as ProtoPacketFlags,
     },
-    shared::Socket,
 };
 
 /// Converts a Solana packet to a protobuf packet
