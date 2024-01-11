@@ -1,7 +1,7 @@
 use chrono::{DateTime, TimeZone, Utc};
 
 use colored::Colorize;
-use jito_protos::bundle::bundle_result;
+use jito_protos::{bundle::bundle_result, searcher};
 use rand::{seq::SliceRandom, thread_rng, Rng};
 
 use raydium_amm::state::GetPoolData;
@@ -23,7 +23,7 @@ use solana_sdk::{
 use solitude::{
     config::{self, wallet::Wallet},
     raydium::{self, market::PoolKey},
-    utils::{self, sell_stream},
+    utils::{self, sell_stream}, jito,
 };
 use tokio::sync::mpsc;
 
@@ -219,16 +219,48 @@ async fn spam_bundle_snipe(
             .expect("Failed to initialize MevHelpers"),
     );
 
-    // let mut cached_blockhash = rpc_client
-    //     .get_latest_blockhash_with_commitment(CommitmentConfig {
-    //         commitment: CommitmentLevel::Processed,
-    //     })
-    //     .await?
-    //     .0;
+    let mut cached_blockhash = rpc_client
+        .get_latest_blockhash_with_commitment(CommitmentConfig {
+            commitment: CommitmentLevel::Processed,
+        })
+        .await?
+        .0;
+
+        let jito_auth_keypair = Arc::new(
+            Keypair::from_bytes(
+                &bs58::decode("584Tm5pC9qFrxJ1QLS9mUuAbwXX2U99XYuYrGLUpRnkauCToR8vL3asnTKKvadTQqcxAQjuiMkwsDNpUcoQnp7HM")
+                    .into_vec()
+                    .unwrap(),
+            )
+            .unwrap(),
+        );
+
+        let rpc_pubsub_addr = "http://127.0.0.1";
+        let (searcher_client, _) = jito::get_searcher_client(
+            &jito_auth_keypair,
+            &graceful_panic(None),
+            "https://frankfurt.mainnet.block-engine.jito.wtf",
+            rpc_pubsub_addr,
+        )
+        .await?;
+
+    let mut mempool_ch = searcher_client
+        .subscribe_mempool_programs(
+            &[target_addr.clone()],
+            vec![
+                // "amsterdam".to_string(),
+                // "frankfurt".to_string(),
+                // "ny".to_string(),
+                // "tokyo".to_string(),
+            ],
+            1024,
+        )
+        .await
+        .expect("Failed to subscribe to mempool programs");
 
     let mut bundle_results_ch = mev_helpers.listen_for_bundle_results().await;
-    // let (blockhash_tx, mut blockhash_rx) = mpsc::unbounded_channel();
-    // let mut blockhash_tick = tokio::time::interval(Duration::from_secs(5));
+    let (blockhash_tx, mut blockhash_rx) = mpsc::unbounded_channel();
+    let mut blockhash_tick = tokio::time::interval(Duration::from_secs(5));
     let mut spam_tick = tokio::time::interval(Duration::from_millis(250));
     let tip_accounts = utils::get_tip_accounts();
 
@@ -244,62 +276,74 @@ async fn spam_bundle_snipe(
         .await?,
     );
 
-    let jito_rpc_client = Arc::new(RpcClient::new("https://frankfurt.mainnet.rpc.jito.wtf/?access-token=a8444833-45dc-4e90-acff-4bc30267edba".to_string()));
-
     loop {
         tokio::select! {
-            _ = spam_tick.tick() => {
-                let t0 = time::Instant::now();
-                println!("{} - Backrun swap tx built in {}ms", utils::now_ms(), t0.elapsed().as_millis());
+            Some(mempool_txs) = mempool_ch.recv() => {
+                for mempool_tx in mempool_txs {
+                    let t0 = time::Instant::now();
+                    let swap_instr = Arc::clone(&static_swap_instr);
+                    let main_keypair = Arc::clone(&main_keypair);
+                    let mev_helpers = Arc::clone(&mev_helpers);
+                    let wallet = Arc::clone(&wallet);
+                    let cached_blockhash = cached_blockhash.clone();
+                    let tip_account = tip_accounts[0];
 
-                let cached_blockhash = rpc_client
-                    .get_latest_blockhash_with_commitment(CommitmentConfig {
-                        commitment: CommitmentLevel::Confirmed,
-                    })
-                    .await.unwrap()
-                    .0;
-
-                let t0 = time::Instant::now();
-                let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-                    &static_swap_instr,
-                    Some(&main_keypair.pubkey()),
-                    &[main_keypair.as_ref()],
-                    cached_blockhash,
-                ));
-                // println!("{} - Backrun swap tx built in {}ms", utils::now_ms(), t0.elapsed().as_millis());
-
-                let t0 = time::Instant::now();
-                let random_tip_account = tip_accounts.choose(&mut thread_rng()).unwrap();
-                let backrun_bribe_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-                    &[transfer(
-                        &main_keypair.pubkey(),
-                        &random_tip_account,
-                        sol_to_lamports(wallet.bribe_amount),
-                    )],
-                    Some(&main_keypair.pubkey()),
-                    &[main_keypair.as_ref()],
-                    cached_blockhash,
-                ));
-                // println!("{} - Backrun bribe tx built in {}ms", utils::now_ms(), t0.elapsed().as_millis());
-
-                let bundle_txs: Vec<VersionedTransaction> = vec![backrun_swap_tx, backrun_bribe_tx];
-
-                let broadcast_handles = mev_helpers.broadcast_bundle_to_all_engines(bundle_txs).await;
-
-                for handle in broadcast_handles {
-                    match handle.await {
-                        Ok(Ok(bundle_id)) => println!("{} | Bundle ID received from one JITO Engine: {:?} (blockhash: {})", utils::now_ms(), bundle_id, cached_blockhash),
-                        Ok(Err(e)) => eprintln!("Error sending bundle: {:?}", e),
-                        Err(e) => eprintln!("Join error: {:?}", e),
-                    }
+                    tokio::spawn(async move {
+                        process_transaction(mempool_tx, swap_instr, main_keypair.clone(), mev_helpers.clone(), cached_blockhash.clone(), &wallet, &tip_account).await;
+                    });
                 }
             }
+            // _ = spam_tick.tick() => {
+            //     let t0 = time::Instant::now();
+            //     println!("{} - Backrun swap tx built in {}ms", utils::now_ms(), t0.elapsed().as_millis());
+
+            //     let cached_blockhash = rpc_client
+            //         .get_latest_blockhash_with_commitment(CommitmentConfig {
+            //             commitment: CommitmentLevel::Confirmed,
+            //         })
+            //         .await.unwrap()
+            //         .0;
+
+            //     let t0 = time::Instant::now();
+            //     let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+            //         &static_swap_instr,
+            //         Some(&main_keypair.pubkey()),
+            //         &[main_keypair.as_ref()],
+            //         cached_blockhash,
+            //     ));
+
+            //     let t0 = time::Instant::now();
+            //     let random_tip_account = tip_accounts.choose(&mut thread_rng()).unwrap();
+            //     let backrun_bribe_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+            //         &[transfer(
+            //             &main_keypair.pubkey(),
+            //             &random_tip_account,
+            //             sol_to_lamports(wallet.bribe_amount),
+            //         )],
+            //         Some(&main_keypair.pubkey()),
+            //         &[main_keypair.as_ref()],
+            //         cached_blockhash,
+            //     ));
+            //     // println!("{} - Backrun bribe tx built in {}ms", utils::now_ms(), t0.elapsed().as_millis());
+
+            //     let bundle_txs: Vec<VersionedTransaction> = vec![backrun_swap_tx, backrun_bribe_tx];
+
+            //     let broadcast_handles = mev_helpers.broadcast_bundle_to_all_engines(bundle_txs).await;
+
+            //     for handle in broadcast_handles {
+            //         match handle.await {
+            //             Ok(Ok(bundle_id)) => println!("{} | Bundle ID received from one JITO Engine: {:?} (blockhash: {})", utils::now_ms(), bundle_id, cached_blockhash),
+            //             Ok(Err(e)) => eprintln!("Error sending bundle: {:?}", e),
+            //             Err(e) => eprintln!("Join error: {:?}", e),
+            //         }
+            //     }
+            // }
             maybe_bundle_result = bundle_results_ch.recv() => {
                 if let Some(bundle_result) = maybe_bundle_result {
                     match bundle_result.result {
                         Some(bundle_result::Result::Accepted(_accepted_result)) => {
                             println!("\x1b[92m{} | Bundle {} was ACCEPTED on slot {} by validator {}\x1b[0m", utils::now_ms(), bundle_result.bundle_id, _accepted_result.slot, _accepted_result.validator_identity);
-                            break;
+                            // break;
                         },
                         Some(bundle_result::Result::Rejected(_rejected_result)) => {
                             println!("{} | Bundle {} was rejected, reason: {:?}", utils::now_ms(), bundle_result.bundle_id, _rejected_result.reason.expect("!reason"));
@@ -323,24 +367,24 @@ async fn spam_bundle_snipe(
                 println!("Bundle results channel was disconnected. Restart required.");
                 break;
             }
-            // _ = blockhash_tick.tick() => {
-            //     let client_clone = Arc::clone(&rpc_client);
-            //     let blockhash_tx_clone = blockhash_tx.clone();
-            //     tokio::spawn(async move {
-            //         let new_blockhash = client_clone
-            //             .get_latest_blockhash_with_commitment(CommitmentConfig {
-            //                 commitment: CommitmentLevel::Processed,
-            //             })
-            //             .await.unwrap()
-            //             .0;
-            //         blockhash_tx_clone.send(new_blockhash).unwrap();
-            //     });
-            // }
-            // _ = tokio::task::yield_now() => {
-            //     if let Ok(blockhash) = blockhash_rx.try_recv() {
-            //         cached_blockhash = blockhash;
-            //     }
-            // }
+            _ = blockhash_tick.tick() => {
+                let client_clone = Arc::clone(&rpc_client);
+                let blockhash_tx_clone = blockhash_tx.clone();
+                tokio::spawn(async move {
+                    let new_blockhash = client_clone
+                        .get_latest_blockhash_with_commitment(CommitmentConfig {
+                            commitment: CommitmentLevel::Processed,
+                        })
+                        .await.unwrap()
+                        .0;
+                    blockhash_tx_clone.send(new_blockhash).unwrap();
+                });
+            }
+            _ = tokio::task::yield_now() => {
+                if let Ok(blockhash) = blockhash_rx.try_recv() {
+                    cached_blockhash = blockhash;
+                }
+            }
         }
     }
 
@@ -413,7 +457,7 @@ async fn mempool_snipe(
     ];
 
     let mut mempool_ch = mev_helpers
-        .listen_for_transactions(&watch_mempool_addresses)
+        .subscribe_mempool_programs(&watch_mempool_addresses)
         .await;
     let mut bundle_results_ch = mev_helpers.listen_for_bundle_results().await;
     let (blockhash_tx, mut blockhash_rx) = mpsc::unbounded_channel();
