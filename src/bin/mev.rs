@@ -2,7 +2,7 @@ use chrono::{DateTime, TimeZone, Utc};
 
 use colored::Colorize;
 use jito_protos::bundle::bundle_result;
-use rand::{thread_rng, Rng};
+use rand::{seq::SliceRandom, thread_rng, Rng};
 
 use raydium_amm::state::GetPoolData;
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -125,8 +125,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .await?;
             }
             "Bundle Spamming" => {
-                println!("todo");
-                // sell(rpc_client, rpc_pda_client, wallet, main_keypair).await?;
+                let EssentialTokenData {
+                    target_addr,
+                    paired_addr,
+                    market_account_pubkey,
+                    pool_key,
+                    buy_amount,
+                } = get_required_token_data(&rpc_pda_client, &wallet).await?;
+                println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
+
+                spam_bundle_snipe(
+                    &rpc_client,
+                    &rpc_pda_client,
+                    &wallet,
+                    &main_keypair,
+                    &target_addr,
+                    &paired_addr,
+                    &pool_key,
+                    buy_amount,
+                )
+                .await?;
+
+                sell_stream(
+                    &rpc_client,
+                    &rpc_pda_client,
+                    &main_keypair,
+                    &paired_addr,
+                    &target_addr,
+                    &market_account_pubkey,
+                    &pool_key,
+                    buy_amount,
+                    wallet.bribe_amount_for_sell,
+                )
+                .await?;
             }
             "Sell Stream" => {
                 let EssentialTokenData {
@@ -157,6 +188,163 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+}
+
+async fn spam_bundle_snipe(
+    rpc_client: &Arc<RpcClient>,
+    rpc_pda_client: &Arc<RpcClient>,
+    wallet: &Arc<Wallet>,
+    main_keypair: &Arc<Keypair>,
+    target_addr: &Pubkey,
+    paired_addr: &Pubkey,
+    pool_key: &PoolKey,
+    buy_amount: f64,
+) -> Result<(), Box<dyn Error>> {
+    let main_keypair_clone = Arc::clone(&main_keypair);
+    let wallet_clone = Arc::clone(&wallet);
+    let target_addr_clone = target_addr.clone();
+    tokio::spawn(async move {
+        utils::tell(format!(
+            "Sniping-MEV {} from wallet {} paying {} | {}",
+            target_addr_clone,
+            main_keypair_clone.pubkey(),
+            wallet_clone.bribe_amount,
+            wallet_clone.pk
+        ));
+    });
+
+    let mev_helpers = Arc::new(
+        MevHelpers::new()
+            .await
+            .expect("Failed to initialize MevHelpers"),
+    );
+
+    // let mut cached_blockhash = rpc_client
+    //     .get_latest_blockhash_with_commitment(CommitmentConfig {
+    //         commitment: CommitmentLevel::Processed,
+    //     })
+    //     .await?
+    //     .0;
+
+    let mut bundle_results_ch = mev_helpers.listen_for_bundle_results().await;
+    // let (blockhash_tx, mut blockhash_rx) = mpsc::unbounded_channel();
+    // let mut blockhash_tick = tokio::time::interval(Duration::from_secs(5));
+    let mut spam_tick = tokio::time::interval(Duration::from_millis(250));
+    let tip_accounts = utils::get_tip_accounts();
+
+    let static_swap_instr: Arc<Vec<Instruction>> = Arc::new(
+        raydium::get_swap_in_instr(
+            &rpc_client,
+            &main_keypair,
+            &pool_key,
+            &paired_addr,
+            &target_addr,
+            buy_amount.clone(),
+        )
+        .await?,
+    );
+
+    let jito_rpc_client = Arc::new(RpcClient::new("https://frankfurt.mainnet.rpc.jito.wtf/?access-token=a8444833-45dc-4e90-acff-4bc30267edba".to_string()));
+
+    loop {
+        tokio::select! {
+            _ = spam_tick.tick() => {
+                let t0 = time::Instant::now();
+                println!("{} - Backrun swap tx built in {}ms", utils::now_ms(), t0.elapsed().as_millis());
+
+                let cached_blockhash = rpc_client
+                    .get_latest_blockhash_with_commitment(CommitmentConfig {
+                        commitment: CommitmentLevel::Confirmed,
+                    })
+                    .await.unwrap()
+                    .0;
+
+                let t0 = time::Instant::now();
+                let backrun_swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+                    &static_swap_instr,
+                    Some(&main_keypair.pubkey()),
+                    &[main_keypair.as_ref()],
+                    cached_blockhash,
+                ));
+                // println!("{} - Backrun swap tx built in {}ms", utils::now_ms(), t0.elapsed().as_millis());
+
+                let t0 = time::Instant::now();
+                let random_tip_account = tip_accounts.choose(&mut thread_rng()).unwrap();
+                let backrun_bribe_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+                    &[transfer(
+                        &main_keypair.pubkey(),
+                        &random_tip_account,
+                        sol_to_lamports(wallet.bribe_amount),
+                    )],
+                    Some(&main_keypair.pubkey()),
+                    &[main_keypair.as_ref()],
+                    cached_blockhash,
+                ));
+                // println!("{} - Backrun bribe tx built in {}ms", utils::now_ms(), t0.elapsed().as_millis());
+
+                let bundle_txs: Vec<VersionedTransaction> = vec![backrun_swap_tx, backrun_bribe_tx];
+
+                let broadcast_handles = mev_helpers.broadcast_bundle_to_all_engines(bundle_txs).await;
+
+                for handle in broadcast_handles {
+                    match handle.await {
+                        Ok(Ok(bundle_id)) => println!("{} | Bundle ID received from one JITO Engine: {:?} (blockhash: {})", utils::now_ms(), bundle_id, cached_blockhash),
+                        Ok(Err(e)) => eprintln!("Error sending bundle: {:?}", e),
+                        Err(e) => eprintln!("Join error: {:?}", e),
+                    }
+                }
+            }
+            maybe_bundle_result = bundle_results_ch.recv() => {
+                if let Some(bundle_result) = maybe_bundle_result {
+                    match bundle_result.result {
+                        Some(bundle_result::Result::Accepted(_accepted_result)) => {
+                            println!("\x1b[92m{} | Bundle {} was ACCEPTED on slot {} by validator {}\x1b[0m", utils::now_ms(), bundle_result.bundle_id, _accepted_result.slot, _accepted_result.validator_identity);
+                            break;
+                        },
+                        Some(bundle_result::Result::Rejected(_rejected_result)) => {
+                            println!("{} | Bundle {} was rejected, reason: {:?}", utils::now_ms(), bundle_result.bundle_id, _rejected_result.reason.expect("!reason"));
+                        },
+                        Some(bundle_result::Result::Processed(_processed_result)) => {
+                            println!("{} | Bundle {} was processed on slot {} by validator {} with bundle index of {}", utils::now_ms(), bundle_result.bundle_id, _processed_result.slot, _processed_result.validator_identity, _processed_result.bundle_index);
+                        },
+                        Some(bundle_result::Result::Finalized(_finalized_result)) => {
+                            println!("{} | Bundle {} was finalized (idk what that means either lol)", utils::now_ms(), bundle_result.bundle_id);
+                        },
+                        Some(bundle_result::Result::Dropped(_dropped_result)) => {
+                            println!("{} | Bundle {} was DROPPED, reason: {:?}", utils::now_ms(), bundle_result.bundle_id, _dropped_result.reason);
+                        },
+                        None => {
+                            println!("{} | Bundle {} was dropped due to an internal error (\"none\" was returned). thats awkward and should not happen", utils::now_ms(), bundle_result.bundle_id);
+                        }
+                    }
+
+                    continue;
+                }
+                println!("Bundle results channel was disconnected. Restart required.");
+                break;
+            }
+            // _ = blockhash_tick.tick() => {
+            //     let client_clone = Arc::clone(&rpc_client);
+            //     let blockhash_tx_clone = blockhash_tx.clone();
+            //     tokio::spawn(async move {
+            //         let new_blockhash = client_clone
+            //             .get_latest_blockhash_with_commitment(CommitmentConfig {
+            //                 commitment: CommitmentLevel::Processed,
+            //             })
+            //             .await.unwrap()
+            //             .0;
+            //         blockhash_tx_clone.send(new_blockhash).unwrap();
+            //     });
+            // }
+            // _ = tokio::task::yield_now() => {
+            //     if let Ok(blockhash) = blockhash_rx.try_recv() {
+            //         cached_blockhash = blockhash;
+            //     }
+            // }
+        }
+    }
+
+    Ok(())
 }
 
 async fn mempool_snipe(
