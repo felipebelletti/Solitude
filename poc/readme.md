@@ -54,3 +54,16 @@ openbook market data offsets
 - Key marketVersion not found
 - Key marketProgramId not found
 - Key marketAuthority not found
+
+Extras:
+raydium_pool->lpMint data offsets
+- Offset 4 to 36 is 5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1 (authority)
+
+raydium_pool->baseVault data offsets
+- Offset 32 to 64 is 5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1 (authority)
+
+openbook_market->market_base_vault data offsets
+- Offset 32 to 64 is C1cPxTExbSsjC7xhhgQgD8JndqzgsHSBVdGrzCWo5783 (marketAuthority)
+
+Extras 2:
+- baseVault (not the marketBaseVault) points to Authority at [32:64]

@@ -1,6 +1,6 @@
 use reqwest;
 use serde::{Deserialize};
-use tokio;
+
 
 // #[derive(Deserialize, Debug)]
 // pub struct Pool {

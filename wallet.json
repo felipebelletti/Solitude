@@ -1,0 +1,11 @@
+{
+    "bribe_amount": 0.001,
+    "amounts": {
+        "So11111111111111111111111111111111111111112": 0.001,
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 10
+    },
+    "bribe_amount_for_sell": 0.001,
+    "pk": "4ap8jphQdN2wZksCvJm71yYns1V5LzELCQd1WYCSUHJYhLeUQwKnTLGJKguKVee1ZCyGBMUq3RhBLXiehRNiRAWV",
+    "spam": false,
+    "filter_liquidity": false
+}
