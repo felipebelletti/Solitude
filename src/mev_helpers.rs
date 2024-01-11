@@ -29,8 +29,8 @@ impl MevHelpers {
         let rpc_pubsub_addr = "http://127.0.0.1";
 
         let block_engine_urls = vec![
-            "https://amsterdam.mainnet.block-engine.jito.wtf",
             "https://frankfurt.mainnet.block-engine.jito.wtf",
+            "https://amsterdam.mainnet.block-engine.jito.wtf",
             "https://ny.mainnet.block-engine.jito.wtf",
             // "https://tokyo.mainnet.block-engine.jito.wtf",
         ];
@@ -54,12 +54,46 @@ impl MevHelpers {
         Ok(Self { searcher_clients })
     }
 
-    pub async fn listen_for_transactions(&self, watch_mempool_addresses: &[Pubkey]) -> mpsc::Receiver<VersionedTransaction> {
+    pub async fn subscribe_mempool_programs(&self, watch_mempool_addresses: &[Pubkey]) -> mpsc::Receiver<VersionedTransaction> {
         let (tx, rx) = mpsc::channel(1024);
 
         for searcher_client in self.searcher_clients.iter() {
             let mut mempool_ch = searcher_client
                 .subscribe_mempool_programs(
+                    watch_mempool_addresses,
+                    vec![
+                        "amsterdam".to_string(),
+                        "frankfurt".to_string(),
+                        "ny".to_string(),
+                        "tokyo".to_string(),
+                    ],
+                    1024,
+                )
+                .await
+                .expect("Failed to subscribe to mempool programs");
+
+            let tx_clone = tx.clone();
+            tokio::spawn(async move {
+                while let Some(mempool_txs) = mempool_ch.recv().await {
+                    for mempool_tx in mempool_txs {
+                        if let Err(e) = tx_clone.send(mempool_tx).await {
+                            eprintln!("Failed to send transaction: {}", e);
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
+        rx
+    }
+
+    pub async fn susbcribe_mempool_accounts(&self, watch_mempool_addresses: &[Pubkey]) -> mpsc::Receiver<VersionedTransaction> {
+        let (tx, rx) = mpsc::channel(1024);
+
+        for searcher_client in self.searcher_clients.iter() {
+            let mut mempool_ch = searcher_client
+                .subscribe_mempool_accounts(
                     watch_mempool_addresses,
                     vec![
                         "amsterdam".to_string(),
