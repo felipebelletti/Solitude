@@ -12,7 +12,7 @@ use tokio::{task::JoinHandle, sync::mpsc};
 use crate::{jito::{self, BundleId}};
 
 pub struct MevHelpers {
-    searcher_clients: Vec<Arc<SearcherClient<ClusterDataImpl, InterceptedService<Channel, ClientInterceptor>>>>,
+    pub searcher_clients: Vec<Arc<SearcherClient<ClusterDataImpl, InterceptedService<Channel, ClientInterceptor>>>>,
 }
 
 impl MevHelpers {
@@ -62,10 +62,10 @@ impl MevHelpers {
                 .subscribe_mempool_programs(
                     watch_mempool_addresses,
                     vec![
-                        "amsterdam".to_string(),
-                        "frankfurt".to_string(),
-                        "ny".to_string(),
-                        "tokyo".to_string(),
+                        // "amsterdam".to_string(),
+                        // "frankfurt".to_string(),
+                        // "ny".to_string(),
+                        // "tokyo".to_string(),
                     ],
                     1024,
                 )
@@ -96,10 +96,10 @@ impl MevHelpers {
                 .subscribe_mempool_accounts(
                     watch_mempool_addresses,
                     vec![
-                        "amsterdam".to_string(),
-                        "frankfurt".to_string(),
-                        "ny".to_string(),
-                        "tokyo".to_string(),
+                        // "amsterdam".to_string(),
+                        // "frankfurt".to_string(),
+                        // "ny".to_string(),
+                        // "tokyo".to_string(),
                     ],
                     1024,
                 )
