@@ -23,9 +23,9 @@ use solana_sdk::{
 use solitude::{
     config::{self, wallet::Wallet},
     raydium::{self, market::PoolKey},
-    utils::{self, sell_stream}, jito,
+    utils::{self, sell_stream}, jito::{self, SearcherClientError, BundleId},
 };
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinHandle};
 
 use std::{
     error::Error,
@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         panic!("get out");
     }
 
-    println!("A wild mev appeared ~ 0.2.6");
+    println!("A wild mev appeared ~ 0.2.8");
 
     let wallet = Arc::new(config::wallet::read_from_wallet_file());
 
@@ -591,11 +591,31 @@ async fn process_transaction(
         t0.elapsed().as_millis()
     );
 
-    let bundle_txs: Vec<VersionedTransaction> = vec![mempool_tx, backrun_swap_tx, backrun_bribe_tx];
+    // let bundle_txs: Vec<VersionedTransaction> = vec![mempool_tx, backrun_swap_tx, backrun_bribe_tx];
 
-    let broadcast_handles = mev_helpers
-        .broadcast_bundle_to_all_engines(bundle_txs)
-        .await;
+    let broadcast_handles: Vec<JoinHandle<Result<BundleId, SearcherClientError>>> = mev_helpers.searcher_clients.iter().map(|client| {
+        let t0 = time::Instant::now();
+        let client_clone = Arc::clone(client);
+        let mempool_tx_clone = mempool_tx.clone();
+        let backrun_swap_tx_clone = backrun_swap_tx.clone();
+        let backrun_bribe_tx_clone = backrun_bribe_tx.clone();
+
+        let random_bytes = thread_rng().gen_range(0x20u8..0x7Fu8);
+        let dummy_memo_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+            &[spl_memo::build_memo(&[random_bytes], &[])],
+            Some(&main_keypair.pubkey()),
+            &[main_keypair.as_ref()],
+            cached_blockhash,
+        ));
+
+        let bundle_txs: Vec<VersionedTransaction> = vec![mempool_tx_clone, backrun_swap_tx_clone, dummy_memo_tx, backrun_bribe_tx_clone];
+
+        tokio::spawn(async move {
+            let ret = client_clone.send_bundle(bundle_txs).await;
+            println!("Took {}ms broadcast_handles(init)->send_bundle(await)", t0.elapsed().as_millis());
+            ret
+        })
+    }).collect();
 
     for handle in broadcast_handles {
         match handle.await {

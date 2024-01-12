@@ -491,23 +491,80 @@ async fn simulate_swap(
     market_event_queue_account: &Account,
     user_source_owner_account: &Account,
 ) -> Result<GetSwapBaseInData, Box<dyn Error>> {
-    // let mut amm_account = client.get_account(&pool_key.id).await?;
-    // let mut amm_authority_account = client.get_account(&pool_key.authority).await?;
-    let mut open_orders_account = client.get_account_with_commitment(&pool_key.open_orders, CommitmentConfig {
-        commitment: CommitmentLevel::Processed,
-    }).await?.value.unwrap();
-    let mut target_orders_account = client.get_account_with_commitment(&pool_key.target_orders, CommitmentConfig {
-        commitment: CommitmentLevel::Processed,
-    }).await?.value.unwrap();
-    let mut coin_vault_account = client.get_account_with_commitment(&pool_key.base_vault, CommitmentConfig {
-        commitment: CommitmentLevel::Processed,
-    }).await?.value.unwrap();
-    let mut pc_vault_account = client.get_account_with_commitment(&pool_key.quote_vault, CommitmentConfig {
-        commitment: CommitmentLevel::Processed,
-    }).await?.value.unwrap();
-    let mut lp_mint_account = client.get_account_with_commitment(&pool_key.lp_mint, CommitmentConfig {
-        commitment: CommitmentLevel::Processed,
-    }).await?.value.unwrap();
+    let mut open_orders_account = loop {
+        match client.get_account_with_commitment(&pool_key.open_orders, CommitmentConfig {
+            commitment: CommitmentLevel::Processed,
+        }).await?.value {
+            Some(open_orders_account) => break open_orders_account,
+            None => {
+                println!(
+                    "\r\n\x1B[2K{}",
+                    "No open orders account found (if you just sniped some token, just wait a little bit)".red().bold()
+                );
+                continue;
+            }
+        };
+    };
+
+    let mut target_orders_account = loop {
+        match client.get_account_with_commitment(&pool_key.target_orders, CommitmentConfig {
+            commitment: CommitmentLevel::Processed,
+        }).await?.value {
+            Some(target_orders_account) => break target_orders_account,
+            None => {
+                println!(
+                    "\r\n\x1B[2K{}",
+                    "No target orders account found (if you just sniped some token, just wait a little bit)".red().bold()
+                );
+                continue;
+            }
+        };
+    };
+    
+    let mut coin_vault_account = loop {
+        match client.get_account_with_commitment(&pool_key.base_vault, CommitmentConfig {
+            commitment: CommitmentLevel::Processed,
+        }).await?.value {
+            Some(coin_vault_account) => break coin_vault_account,
+            None => {
+                println!(
+                    "\r\n\x1B[2K{}",
+                    "No coin vault account found (if you just sniped some token, just wait a little bit)".red().bold()
+                );
+                continue;
+            }
+        };
+    };
+
+    let mut pc_vault_account = loop {
+        match client.get_account_with_commitment(&pool_key.quote_vault, CommitmentConfig {
+            commitment: CommitmentLevel::Processed,
+        }).await?.value {
+            Some(pc_vault_account) => break pc_vault_account,
+            None => {
+                println!(
+                    "\r\n\x1B[2K{}",
+                    "No pc vault account found (if you just sniped some token, just wait a little bit)".red().bold()
+                );
+                continue;
+            }
+        };
+    };
+
+    let mut lp_mint_account = loop {
+        match client.get_account_with_commitment(&pool_key.lp_mint, CommitmentConfig {
+            commitment: CommitmentLevel::Processed,
+        }).await?.value {
+            Some(lp_mint_account) => break lp_mint_account,
+            None => {
+                println!(
+                    "\r\n\x1B[2K{}",
+                    "No lp mint account found (if you just sniped some token, just wait a little bit)".red().bold()
+                );
+                continue;
+            }
+        };
+    };
 
     let mut user_source_account = loop {
         match client.get_account_with_commitment(&target_token_token_account, CommitmentConfig {
