@@ -21,10 +21,17 @@ use crate::raydium::utils::{get_associated_authority, get_associated_lp_mint};
 use crate::utils::get_token_decimals;
 
 lazy_static! {
+    // mainnet
     static ref OPENBOOK_PROGRAM_ID: Pubkey =
         Pubkey::from_str("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX").unwrap();
-    static ref RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM: Pubkey =
+    pub static ref RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM: Pubkey =
         Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap();
+
+    // devnet
+    // static ref OPENBOOK_PROGRAM_ID: Pubkey =
+    //     Pubkey::from_str("EoTcMgcDRTJVZDMZWBoU6rhYHZfkNTVEAfz3uUJRcYGj").unwrap();
+    // pub static ref RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM: Pubkey =
+    //     Pubkey::from_str("HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8").unwrap();
 }
 
 const OPENBOOK_DATASIZE: u64 = 388;
@@ -37,6 +44,10 @@ pub async fn get_openbook_market_for_address(
 ) -> Result<(Pubkey, Account), Box<dyn Error>> {
     const BASE_MINT_OFFSET: usize = 53;
     const QUOTE_MINT_OFFSET: usize = 85;
+
+    if !OPENBOOK_PROGRAM_ID.eq(&Pubkey::from_str("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX")?) {
+        println!("YOU ARE ON TESTNETTTTTT REMEMBRRRRRR");
+    }
 
     let base_mint_filtered_accounts = client
         .get_program_accounts_with_config(
