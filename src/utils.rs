@@ -168,17 +168,26 @@ pub async fn sell_stream(
     let tip_account = generate_tip_account();
     println!("test 2");
 
-    let mut token_balance: u64 = pda_client
+    let mut token_balance: u64 = loop {
+        match pda_client
         .get_token_account_balance_with_commitment(
             &token_account_addr,
             CommitmentConfig {
                 commitment: CommitmentLevel::Processed,
             },
         )
-        .await?
-        .value
-        .amount
-        .parse()?;
+        .await {
+            Ok(token_balance) => break token_balance.value.amount.parse()?,
+            Err(e) => {
+                println!(
+                    "\r\n\x1B[2K{}: {:?}",
+                    "Failed to get token balance (if you just sniped this token, wait a little bit)".red().bold(),
+                    e
+                );
+                continue;
+            }
+        };
+    };
 
     println!("test 3");
 
