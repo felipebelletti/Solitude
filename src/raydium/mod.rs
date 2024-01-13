@@ -308,12 +308,7 @@ pub async fn get_modded_swap_instr(
             amount_in: sol_to_lamports(sol_amount),
             minimum_amount_out: 0,
         }.pack()?,
-        program_id: Pubkey::from_str("3P8CEysLPnSrxubpryya8jUCXgzDdassi3nMQ7D2mXcS")?, // data: AmmInstruction::SwapBaseIn(SwapInstructionBaseIn {
-                                                                                       //     amount_in: sol_to_lamports(0.001),
-                                                                                       //     minimum_amount_out: 0,
-                                                                                       // })
-                                                                                       // .pack()?,
-                                                                                       // program_id: Pubkey::from_str("HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8")?
+        program_id: Pubkey::from_str("3P8CEysLPnSrxubpryya8jUCXgzDdassi3nMQ7D2mXcS")?,
     };
     instr_chain.push(swap_instr);
 
