@@ -9,5 +9,5 @@
     "spam": false,
     "filter_liquidity": false,
 
-    "testnet": true
+    "testnet": false
 }
