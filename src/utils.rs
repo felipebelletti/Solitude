@@ -551,20 +551,20 @@ async fn simulate_swap(
         };
     };
 
-    let mut lp_mint_account = loop {
-        match client.get_account_with_commitment(&pool_key.lp_mint, CommitmentConfig {
-            commitment: CommitmentLevel::Processed,
-        }).await?.value {
-            Some(lp_mint_account) => break lp_mint_account,
-            None => {
-                println!(
-                    "\r\n\x1B[2K{}",
-                    "No lp mint account found (if you just sniped some token, just wait a little bit)".red().bold()
-                );
-                continue;
-            }
-        };
-    };
+    // let mut lp_mint_account = loop {
+    //     match client.get_account_with_commitment(&pool_key.lp_mint, CommitmentConfig {
+    //         commitment: CommitmentLevel::Processed,
+    //     }).await?.value {
+    //         Some(lp_mint_account) => break lp_mint_account,
+    //         None => {
+    //             println!(
+    //                 "\r\n\x1B[2K{}",
+    //                 "No lp mint account found (if you just sniped some token, just wait a little bit)".red().bold()
+    //             );
+    //             continue;
+    //         }
+    //     };
+    // };
 
     let mut user_source_account = loop {
         match client.get_account_with_commitment(&target_token_token_account, CommitmentConfig {
@@ -595,8 +595,6 @@ async fn simulate_swap(
         data
     };
 
-    // println!("Accounts loaded into swap-sim...");
-
     let mut amm_account_clone = amm_account.clone();
     let mut amm_authority_account_clone = amm_authority_account.clone();
     let mut market_info_account_clone = market_info_account.clone();
@@ -611,7 +609,7 @@ async fn simulate_swap(
         (&pool_key.target_orders, false, &mut target_orders_account),
         (&pool_key.base_vault, false, &mut coin_vault_account),
         (&pool_key.quote_vault, false, &mut pc_vault_account),
-        (&pool_key.lp_mint, false, &mut lp_mint_account),
+        // (&pool_key.lp_mint, false, &mut lp_mint_account),
         (
             &pool_key.market_program_id,
             false,
