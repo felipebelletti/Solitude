@@ -5,7 +5,9 @@ use jito_protos::{bundle::bundle_result, searcher};
 use rand::{seq::SliceRandom, thread_rng, Rng};
 
 use raydium_amm::state::GetPoolData;
-use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig, rpc_request::RpcError};
+use solana_client::{
+    nonblocking::rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig, rpc_request::RpcError,
+};
 use solana_program::{
     instruction::{CompiledInstruction, Instruction},
     program_option::COption,
@@ -23,8 +25,9 @@ use solana_sdk::{
 use solitude::{
     config::{self, wallet::Wallet},
     jito::{self, BundleId, SearcherClientError},
-    raydium::{self, market::PoolKey},
-    utils::{self, sell_stream},
+    mev_helpers,
+    raydium::{self, market::PoolKey, InitializedSwapData},
+    utils::{self, generate_tip_account, sell_stream},
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -38,7 +41,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread,
+    thread::{self, sleep, current},
     time::{self, Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -74,10 +77,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Arc::new(Keypair::from_bytes(&bs58::decode(&wallet.pk).into_vec().unwrap()).unwrap());
     println!("Main keypair: {:?}", main_keypair.pubkey());
 
-    let rpc_pubsub_addr = "http://127.0.0.1:8899/";
-    let rpc_pda_url = "https://tame-ancient-mountain.solana-mainnet.quiknode.pro/6a9a95bf7bbb108aea620e7ee4c1fd5e1b67cc62";
-    // let rpc_pubsub_addr = "https://api.devnet.solana.com";
-    // let rpc_pda_url = "https://api.devnet.solana.com";
+    let rpc_pubsub_addr = {
+        if wallet.testnet {
+            "https://api.devnet.solana.com"
+        } else {
+            "http://127.0.0.1:8899/"
+        }
+    };
+    let rpc_pda_url = {
+        if wallet.testnet {
+            "https://api.devnet.solana.com"
+        } else {
+            "https://tame-ancient-mountain.solana-mainnet.quiknode.pro/6a9a95bf7bbb108aea620e7ee4c1fd5e1b67cc62"
+        }
+    };
 
     let rpc_client = Arc::new(RpcClient::new(rpc_pubsub_addr.to_string()));
     let rpc_pda_client = Arc::new(RpcClient::new(rpc_pda_url.to_string()));
@@ -91,26 +104,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //     buy_amount,
     // } = get_required_token_data(&rpc_pda_client, &wallet, Some(Pubkey::from_str("9dmdch3syLAk4z8x6gRbVFMhofiw5NK22uTUfvsS4DSs").unwrap())).await?;
 
-    let EssentialTokenData {
-        target_addr,
-        paired_addr,
-        market_account_pubkey,
-        pool_key,
-        buy_amount,
-    } = get_required_token_data(&rpc_pda_client, &wallet, Some(Pubkey::from_str("4jZXkSNgTQKCDb36ECZ6a2aNzcUniGcDeXgTdtM2HxAX").unwrap())).await?;
+    // mainnet
+    // let EssentialTokenData {
+    //     target_addr,
+    //     paired_addr,
+    //     market_account_pubkey,
+    //     pool_key,
+    //     buy_amount,
+    // } = get_required_token_data(
+    //     &rpc_pda_client,
+    //     &wallet,
+    //     Some(Pubkey::from_str("GdP4Gx77FvJbcxAzVTuzChT33uZMe5XEn26AtYszrNXy").unwrap()),
+    // )
+    // .await?;
 
-    spam_bundle_snipe(
-        &rpc_client,
-        &rpc_pda_client,
-        &wallet,
-        &main_keypair,
-        &target_addr,
-        &paired_addr,
-        &pool_key,
-        buy_amount,
-    )
-    .await?;
-    return Ok(());
+    // spam_bundle_snipe(
+    //     &rpc_client,
+    //     &rpc_pda_client,
+    //     &wallet,
+    //     &main_keypair,
+    //     &target_addr,
+    //     &paired_addr,
+    //     &pool_key,
+    //     buy_amount,
+    // )
+    // .await?;
+    // return Ok(());
 
     let menu_choice = Text::new("Menu:")
         .with_validator(required!("This field is required"))
@@ -128,6 +147,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     market_account_pubkey,
                     pool_key,
                     buy_amount,
+                    pool_open_time: _,
                 } = get_required_token_data(&rpc_pda_client, &wallet, None).await?;
                 println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
 
@@ -163,6 +183,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     market_account_pubkey,
                     pool_key,
                     buy_amount,
+                    pool_open_time,
                 } = get_required_token_data(&rpc_pda_client, &wallet, None).await?;
                 println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
 
@@ -175,6 +196,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     &paired_addr,
                     &pool_key,
                     buy_amount,
+                    pool_open_time,
                 )
                 .await?;
 
@@ -198,6 +220,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     market_account_pubkey,
                     pool_key,
                     buy_amount,
+                    pool_open_time: _,
                 } = get_required_token_data(&rpc_pda_client, &wallet, None).await?;
                 println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
 
@@ -231,48 +254,316 @@ async fn spam_bundle_snipe(
     paired_addr: &Pubkey,
     pool_key: &PoolKey,
     buy_amount: f64,
+    pool_open_time: Option<u64>,
 ) -> Result<(), Box<dyn Error>> {
+    if std::env::args().find(|arg| arg == "--spam").is_none() {
+        println!("to-do");
+        exit(1);
+    }
 
-    let cached_blockhash = rpc_client
+    let target_timestamp: i64 = match pool_open_time {
+        Some(pool_open_time) => pool_open_time as i64,
+        None => Text::new("Target timestamp:")
+            .with_validator(required!("This field is required"))
+            .with_help_message(&format!(
+                "e.g. {} (now + 16 seconds)",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    + 16
+            ))
+            .prompt()?
+            .parse()?,
+    };
+    let target_start_time = target_timestamp - 10;
+
+    let tip_account = generate_tip_account();
+    let mev_helpers = Arc::new(
+        MevHelpers::new()
+            .await
+            .expect("Failed to initialize MevHelpers"),
+    );
+
+    let initialized_swap_data: InitializedSwapData = raydium::get_modded_initialize_swap_instr(
+        &rpc_client,
+        &main_keypair,
+        &paired_addr,
+        &target_addr,
+        buy_amount,
+    )
+    .await?;
+
+    let mut cached_blockhash = rpc_client
         .get_latest_blockhash_with_commitment(CommitmentConfig {
-            commitment: CommitmentLevel::Finalized,
+            commitment: CommitmentLevel::Confirmed,
         })
         .await?
         .0;
 
-    let static_swap_instr: Arc<Vec<Instruction>> = Arc::new(
-        raydium::get_modded_swap_instr(
-            &rpc_client,
-            &main_keypair,
-            &pool_key,
-            &paired_addr,
-            &target_addr,
-            buy_amount.clone(),
-        )
-        .await?,
-    );
+    let mut bundle_results_ch = mev_helpers.listen_for_bundle_results().await;
+    // let (blockhash_tx, mut blockhash_rx) = mpsc::unbounded_channel();
 
-    let swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-        &static_swap_instr,
-        Some(&main_keypair.pubkey()),
-        &[main_keypair.as_ref()],
-        cached_blockhash,
-    ));
+    // let mut blockhash_tick = tokio::time::interval(Duration::from_secs(5));
+    let mut spam_tick = tokio::time::interval(Duration::from_millis(250));
+
+    // let full_swap_chain = raydium::get_modded_swap_chain(
+    //     &pool_key,
+    //     initialized_swap_data.clone(),
+    //     &main_keypair,
+    //     target_timestamp,
+    //     buy_amount,
+    //     0,
+
+    //     &tip_account,
+    //     wallet.bribe_amount,
+    //     &target_addr,
+    // ).unwrap();
+    // let transaction = VersionedTransaction::from(Transaction::new_signed_with_payer(
+    //     &full_swap_chain,
+    //     Some(&main_keypair.pubkey()),
+    //     &[main_keypair.as_ref()],
+    //     cached_blockhash,
+    // ));
+    // loop {
+    //     match rpc_client.send_and_confirm_transaction_with_spinner(&transaction).await {
+    //         Ok(sig) => {
+    //             println!("Transaction sent: {}", sig);
+    //             // break;
+    //         }
+    //         Err(e) => {
+    //             println!("Error sending transaction: {:#?}", e);
+    //             sleep(Duration::from_secs(1));
+    //             continue;
+    //         }
+    //     };
+    // }
+    // return Ok(());
+
+    /*
+    let (searcher_client, _) = jito::get_searcher_client(
+        &Arc::new(
+            Keypair::from_bytes(
+                &bs58::decode("584Tm5pC9qFrxJ1QLS9mUuAbwXX2U99XYuYrGLUpRnkauCToR8vL3asnTKKvadTQqcxAQjuiMkwsDNpUcoQnp7HM")
+                    .into_vec()
+                    .unwrap(),
+            )
+            .unwrap(),
+        ),
+        &graceful_panic(None),
+        "https://frankfurt.mainnet.block-engine.jito.wtf",
+        "http://127.0.0.1:8900",
+    )
+    .await
+    .expect("get_searcher_client failed");
+    let searcher_client = Arc::new(searcher_client);
+    let mut bundle_results_ch = searcher_client.subscribe_bundle_results(1024).await?;
+    */
+    let tip_accounts = utils::get_tip_accounts();
+
+    // let full_swap_chain = raydium::get_modded_swap_chain(
+    //     &pool_key,
+    //     initialized_swap_data.clone(),
+    //     &main_keypair,
+    //     target_timestamp,
+    //     buy_amount,
+    //     thread_rng().gen_range(0..30), // tricky for randomizing generated tx (parallelism)
+    //     // &tip_accounts.choose(&mut thread_rng()).unwrap(),
+    //     &tip_account,
+    //     wallet.bribe_amount,
+    // )
+    // .unwrap();
+    // let bundle_txs = vec![VersionedTransaction::from(
+    //     Transaction::new_signed_with_payer(
+    //         &full_swap_chain,
+    //         Some(&main_keypair.pubkey()),
+    //         &[main_keypair.as_ref()],
+    //         cached_blockhash,
+    //     ),
+    // )];
+    // let handlers = mev_helpers.broadcast_bundle_to_all_engines(bundle_txs).await;
+    // for handle in handlers {
+    //     match handle.await {
+    //         Ok(Ok(bundle_id)) => println!("Bundle ID received from one JITO Engine: {:?}", bundle_id),
+    //         Ok(Err(e)) => eprintln!("Error sending bundle: {:?}", e),
+    //         Err(e) => eprintln!("Join error: {:?}", e),
+    //     }
+    // }
+    // return Ok(());
 
     loop {
-        match rpc_client
-        .send_and_confirm_transaction_with_spinner(&swap_tx)
-        .await {
-            Ok(sig) => {
-                println!("Sent swap tx: {}", sig);
+        tokio::select! {
+            _ = spam_tick.tick() => {
+                let current_timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+                if current_timestamp < target_start_time {
+                    continue;
+                }
+                if current_timestamp > target_timestamp + 2 {
+                    continue
+                    // println!("Target timestamp reached, exiting...");
+                    // break;
+                }
+
+                /*
+                let main_keypair = Arc::clone(&main_keypair);
+                let searcher_client = Arc::clone(&searcher_client);
+                let wallet = Arc::clone(&wallet);
+                let tip_accounts = tip_accounts.clone();
+                let initialized_swap_data = initialized_swap_data.clone();
+                let pool_key = pool_key.clone();
+                tokio::spawn(async move {
+                    let full_swap_chain = raydium::get_modded_swap_chain(
+                        &pool_key,
+                        initialized_swap_data.clone(),
+                        &main_keypair,
+                        target_timestamp,
+                        buy_amount,
+                        thread_rng().gen_range(0..30), // tricky for randomizing generated tx (parallelism)
+
+                        // &tip_accounts.choose(&mut thread_rng()).unwrap(),
+                        &tip_account,
+                        wallet.bribe_amount,
+                    ).unwrap();
+
+                    let bundle_txs = vec![
+                        VersionedTransaction::from(Transaction::new_signed_with_payer(
+                            &full_swap_chain,
+                            Some(&main_keypair.pubkey()),
+                            &[main_keypair.as_ref()],
+                            cached_blockhash,
+                        )),
+                    ];
+                    let bundle_id = searcher_client.send_bundle(bundle_txs).await;
+                    println!("Bundle ID received from one JITO Engine: {:?}", bundle_id);
+                });
+                */
+
+                // another approach
+                let cached_blockhash = rpc_client
+                .get_latest_blockhash_with_commitment(CommitmentConfig {
+                    commitment: CommitmentLevel::Confirmed,
+                })
+                .await.unwrap()
+                .0;
+                let min_amount_out = thread_rng().gen_range(0..50);
+                let full_swap_chain = raydium::get_modded_swap_chain(
+                    &pool_key,
+                    initialized_swap_data.clone(),
+                    &main_keypair,
+                    target_timestamp,
+                    buy_amount,
+                    min_amount_out, // tricky for randomizing generated tx (parallelism)
+
+                    &tip_accounts.choose(&mut thread_rng()).unwrap(),
+                    wallet.bribe_amount,
+                    &target_addr,
+                ).unwrap();
+                let swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+                    &full_swap_chain,
+                    Some(&main_keypair.pubkey()),
+                    &[main_keypair.as_ref()],
+                    cached_blockhash,
+                ));
+                println!("Swap Tx Hash: {:?} | {} | {}", swap_tx.signatures[0], cached_blockhash, min_amount_out);
+                let bundle_txs = vec![
+                    swap_tx,
+                ];
+                let broadcast_handles = mev_helpers.broadcast_bundle_to_all_engines(bundle_txs).await;
+
+                for handle in broadcast_handles {
+                    match handle.await {
+                        Ok(Ok(bundle_id)) => println!("{} | Bundle ID received from one JITO Engine: {:?} (blockhash: {})", utils::now_ms(), bundle_id, cached_blockhash),
+                        Ok(Err(e)) => eprintln!("Error sending bundle: {:?}", e),
+                        Err(e) => eprintln!("Join error: {:?}", e),
+                    }
+                }
+
+                /*
+                let mev_helpers_clone_searcher_iter = mev_helpers.searcher_clients.iter().map(Arc::clone);
+
+                for client in mev_helpers_clone_searcher_iter {
+                    let main_keypair = Arc::clone(&main_keypair);
+                    let tip_accounts = tip_accounts.clone();
+                    let wallet = Arc::clone(&wallet);
+                    let initialized_swap_data = initialized_swap_data.clone();
+                    let pool_key = pool_key.clone();
+
+                    // for each mev client we have to send a different transaction, so we need to use different memos
+                    tokio::spawn(async move {
+                        let full_swap_chain = raydium::get_modded_swap_chain(
+                            &pool_key,
+                            initialized_swap_data.clone(),
+                            &main_keypair,
+                            target_timestamp,
+                            buy_amount,
+                            thread_rng().gen_range(0..30), // tricky for randomizing generated tx (parallelism)
+
+                            // &tip_accounts.choose(&mut thread_rng()).unwrap(),
+                            &tip_account,
+                            wallet.bribe_amount,
+                        ).unwrap();
+
+                        let bundle_txs = vec![
+                            VersionedTransaction::from(Transaction::new_signed_with_payer(
+                                &full_swap_chain,
+                                Some(&main_keypair.pubkey()),
+                                &[main_keypair.as_ref()],
+                                cached_blockhash,
+                            )),
+                        ];
+                        let bundle_id = client.send_bundle(bundle_txs).await;
+                        println!("Bundle ID received from one JITO Engine: {:?}", bundle_id);
+                    });
+                }
+                */
+            }
+            maybe_bundle_result = bundle_results_ch.recv() => {
+                if let Some(bundle_result) = maybe_bundle_result {
+                    match bundle_result.result {
+                        Some(bundle_result::Result::Accepted(_accepted_result)) => {
+                            println!("\x1b[92m{} | Bundle {} was ACCEPTED on slot {} by validator {}\x1b[0m", utils::now_ms(), bundle_result.bundle_id, _accepted_result.slot, _accepted_result.validator_identity);
+                        },
+                        Some(bundle_result::Result::Rejected(_rejected_result)) => {
+                            // println!("{} | Bundle {} was rejected, reason: {:?}", utils::now_ms(), bundle_result.bundle_id, _rejected_result.reason.expect("!reason"));
+                        },
+                        Some(bundle_result::Result::Processed(_processed_result)) => {
+                            // println!("{} | Bundle {} was processed on slot {} by validator {} with bundle index of {}", utils::now_ms(), bundle_result.bundle_id, _processed_result.slot, _processed_result.validator_identity, _processed_result.bundle_index);
+                        },
+                        Some(bundle_result::Result::Finalized(_finalized_result)) => {
+                            // println!("{} | Bundle {} was finalized (idk what that means either lol)", utils::now_ms(), bundle_result.bundle_id);
+                        },
+                        Some(bundle_result::Result::Dropped(_dropped_result)) => {
+                            // println!("{} | Bundle {} was DROPPED, reason: {:?}", utils::now_ms(), bundle_result.bundle_id, _dropped_result.reason);
+                        },
+                        None => {
+                            println!("{} | Bundle {} was dropped due to an internal error (\"none\" was returned). thats awkward and should not happen", utils::now_ms(), bundle_result.bundle_id);
+                        }
+                    }
+                    continue;
+                }
+                println!("Bundle results channel was disconnected. Restart required.");
                 break;
             }
-            Err(e) => {
-                println!("Error sending swap tx:\n{:#?}", e);
-                continue;
-            }
+            // _ = blockhash_tick.tick() => {
+            //     let client_clone = Arc::clone(&rpc_client);
+            //     let blockhash_tx_clone = blockhash_tx.clone();
+            //     tokio::spawn(async move {
+            //         let new_blockhash = client_clone
+            //             .get_latest_blockhash_with_commitment(CommitmentConfig {
+            //                 commitment: CommitmentLevel::Confirmed,
+            //             })
+            //             .await.unwrap()
+            //             .0;
+            //         blockhash_tx_clone.send(new_blockhash).unwrap();
+            //     });
+            // }
+            // _ = tokio::task::yield_now() => {
+            //     if let Ok(blockhash) = blockhash_rx.try_recv() {
+            //         cached_blockhash = blockhash;
+            //     }
+            // }
         }
-    };
+    }
 
     Ok(())
 }
@@ -568,6 +859,7 @@ struct EssentialTokenData {
     market_account_pubkey: Pubkey,
     pool_key: PoolKey,
     buy_amount: f64,
+    pool_open_time: Option<u64>,
 }
 
 async fn get_required_token_data(
@@ -612,20 +904,57 @@ async fn get_required_token_data(
             )
         });
 
-    // if let Ok(get_pool_data) =
-    //     utils::get_pool_data(&rpc_pda_client, &pool_key, &market_account_pubkey).await
-    // {
-    //     let GetPoolData {
-    //         pool_open_time,
-    //         ..
-    //     } = get_pool_data;
+    if let Ok(get_pool_data) =
+        utils::get_pool_data(&rpc_pda_client, &pool_key, &market_account_pubkey).await
+    {
+        let GetPoolData { pool_open_time, .. } = get_pool_data;
 
-    //     let current_timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let current_timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-    //     let opens_at_datetime = chrono::Local.timestamp(pool_open_time as i64, 0);
+        let opens_at_datetime = chrono::Local.timestamp(pool_open_time as i64, 0);
 
-    //     println!("{}", format!("Pool opens at {} (in {} seconds) (GMT-0)", opens_at_datetime, pool_open_time - current_timestamp).yellow());
-    // }
+        if current_timestamp > pool_open_time {
+            println!(
+                "{}",
+                format!(
+                    "Pool is already open ({})",
+                    pool_open_time.to_string().yellow()
+                )
+                .yellow()
+            );
+            return Ok(EssentialTokenData {
+                target_addr,
+                paired_addr,
+                market_account_pubkey,
+                pool_key,
+                buy_amount: *buy_amount,
+                pool_open_time: None,
+            });
+        }
+
+        println!(
+            "{}",
+            format!(
+                "Pool opens at {} (in {} seconds) ({})",
+                opens_at_datetime,
+                pool_open_time - current_timestamp,
+                pool_open_time
+            )
+            .yellow()
+        );
+
+        return Ok(EssentialTokenData {
+            target_addr,
+            paired_addr,
+            market_account_pubkey,
+            pool_key,
+            buy_amount: *buy_amount,
+            pool_open_time: Some(pool_open_time),
+        });
+    }
 
     Ok(EssentialTokenData {
         target_addr,
@@ -633,6 +962,7 @@ async fn get_required_token_data(
         market_account_pubkey,
         pool_key,
         buy_amount: *buy_amount,
+        pool_open_time: None,
     })
 }
 
@@ -646,4 +976,15 @@ fn read_pubkey_from_stdin() -> Result<Pubkey, String> {
 
     let input = input.trim();
     input.parse::<Pubkey>().map_err(|e| e.to_string())
+}
+
+fn read_string_from_stdin() -> Result<String, Box<dyn Error>> {
+    io::stdout().flush().unwrap();
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| e.to_string())?;
+
+    Ok(input.trim().to_string())
 }

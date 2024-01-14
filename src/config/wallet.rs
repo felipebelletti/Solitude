@@ -9,6 +9,7 @@ pub struct Wallet {
     pub spam: bool,
     pub filter_liquidity: bool,
     pub bribe_amount_for_sell: f64,
+    pub testnet: bool,
 }
 
 pub fn read_from_wallet_file() -> Wallet {

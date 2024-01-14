@@ -1,4 +1,3 @@
-
 use chrono::Local;
 use lazy_static::lazy_static;
 use solana_account_decoder::UiAccountEncoding;
@@ -12,26 +11,32 @@ use solana_sdk::pubkey::Pubkey;
 use std::error::Error;
 use std::str::FromStr;
 
-
 use super::utils::{
     get_associated_base_vault, get_associated_id, get_associated_open_orders,
     get_associated_quote_vault, get_associated_target_orders,
 };
+use crate::config::wallet;
 use crate::raydium::utils::{get_associated_authority, get_associated_lp_mint};
 use crate::utils::get_token_decimals;
 
 lazy_static! {
     // mainnet
     static ref OPENBOOK_PROGRAM_ID: Pubkey =
-        Pubkey::from_str("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX").unwrap();
+        {
+            if wallet::read_from_wallet_file().testnet {
+                Pubkey::from_str("EoTcMgcDRTJVZDMZWBoU6rhYHZfkNTVEAfz3uUJRcYGj").unwrap()
+            } else {
+                Pubkey::from_str("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX").unwrap()
+            }
+        };
     pub static ref RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM: Pubkey =
-        Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap();
-
-    // devnet
-    // static ref OPENBOOK_PROGRAM_ID: Pubkey =
-    //     Pubkey::from_str("EoTcMgcDRTJVZDMZWBoU6rhYHZfkNTVEAfz3uUJRcYGj").unwrap();
-    // pub static ref RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM: Pubkey =
-    //     Pubkey::from_str("HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8").unwrap();
+        {
+            if wallet::read_from_wallet_file().testnet {
+                Pubkey::from_str("HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8").unwrap()
+            } else {
+                Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap()
+            }
+        };
 }
 
 const OPENBOOK_DATASIZE: u64 = 388;
@@ -45,7 +50,9 @@ pub async fn get_openbook_market_for_address(
     const BASE_MINT_OFFSET: usize = 53;
     const QUOTE_MINT_OFFSET: usize = 85;
 
-    if !OPENBOOK_PROGRAM_ID.eq(&Pubkey::from_str("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX")?) {
+    if !OPENBOOK_PROGRAM_ID.eq(&Pubkey::from_str(
+        "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
+    )?) {
         println!("YOU ARE ON TESTNETTTTTT REMEMBRRRRRR");
     }
 
@@ -253,7 +260,7 @@ pub fn parse_raydium_pool_account(account: Account) -> RaydiumPool {
     };
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PoolKey {
     pub id: Pubkey,
     pub base_mint: Pubkey,
@@ -356,7 +363,8 @@ pub async fn craft_pool_key(
     // println!("Authority: {}", authority);
 
     // TODO
-    let lp_mint_addr = get_associated_lp_mint(&RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM, &openbook_market_addr)?;
+    let lp_mint_addr =
+        get_associated_lp_mint(&RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM, &openbook_market_addr)?;
 
     Ok(PoolKey {
         id: raydium_pool_addr,
@@ -383,6 +391,6 @@ pub async fn craft_pool_key(
         market_asks: openbook_market.market_asks,
         market_event_queue: openbook_market.market_event_queue,
 
-        lp_mint: lp_mint_addr
+        lp_mint: lp_mint_addr,
     })
 }
