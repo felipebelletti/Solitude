@@ -14,7 +14,7 @@ use solana_sdk::{
     feature_set::add_set_compute_unit_price_ix,
     native_token::sol_to_lamports,
     pubkey::Pubkey,
-    signature::{Keypair, Signer},
+    signature::{Keypair, Signer}, signer,
 };
 use solana_transaction_status::parse_associated_token::spl_associated_token_id;
 use spl_associated_token_account::get_associated_token_address;
@@ -205,6 +205,7 @@ struct InstructionArgs {
     amount_in: u64,
     minimum_amount_out: u64,
     bribe_amount: u64,
+    ignore_existing_balance: bool,
 }
 
 impl InstructionArgs {
@@ -215,6 +216,9 @@ impl InstructionArgs {
         bytes.extend_from_slice(&self.amount_in.to_le_bytes());
         bytes.extend_from_slice(&self.minimum_amount_out.to_le_bytes());
         bytes.extend_from_slice(&self.bribe_amount.to_le_bytes());
+
+        let ignore_existing_balance_byte = if self.ignore_existing_balance { 1 } else { 0 };
+        bytes.push(ignore_existing_balance_byte);
 
         Ok(bytes)
     }
@@ -309,6 +313,8 @@ pub fn get_modded_swap_chain(
     bribe_amount: f64,
     target_token_address: &Pubkey,
 ) -> Result<Vec<Instruction>, Box<dyn Error>> {
+    let program_id = Pubkey::from_str("4dGJwas2qktCfQZ1oUc9hsJTFeTeE8HzLZiP3m5D12bw")?;
+
     let swap_accounts = vec![
         // raydium program id (modded addition)
         AccountMeta::new_readonly(*market::RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM, false),
@@ -349,9 +355,10 @@ pub fn get_modded_swap_chain(
             amount_in: sol_to_lamports(sol_amount),
             minimum_amount_out: min_amount_out_raw,
             bribe_amount: sol_to_lamports(bribe_amount),
+            ignore_existing_balance: false,
         }
         .pack()?,
-        program_id: Pubkey::from_str("3P8CEysLPnSrxubpryya8jUCXgzDdassi3nMQ7D2mXcS")?,
+        program_id,
     };
 
     let close_user_src_token_account = spl_token::instruction::close_account(

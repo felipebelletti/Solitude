@@ -63,6 +63,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let methods: Arc<Vec<String>> = Arc::new(vec![
         "0950".to_string(), // ? swap
         "0b00".to_string(), // ? swap
+        "0900".to_string(), // ? swap
         "09ac".to_string(), // dragonfly
     ]);
     let wallet_to_person: Arc<Mutex<HashMap<Pubkey, &str>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -98,7 +99,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Pubkey::from_str("bjEf4LPBqwGfn8xGfSToy7VUanQeT1EifEwZDopHk9Y")?,
         "detetive",
     );
-    let ignore_unknown_callers = false;
+    let ignore_unknown_callers = true;
 
     loop {
         while let Some(txs) = mempool_ch.recv().await {
