@@ -3530,7 +3530,7 @@ impl Processor {
         let amm_target_orders_info = next_account_info(account_info_iter)?;
         let amm_coin_vault_info = next_account_info(account_info_iter)?;
         let amm_pc_vault_info = next_account_info(account_info_iter)?;
-        let amm_lp_mint_info = next_account_info(account_info_iter)?;
+        // let amm_lp_mint_info = next_account_info(account_info_iter)?;
 
         let market_program_info = next_account_info(account_info_iter)?;
         let market_info = next_account_info(account_info_iter)?;
@@ -3545,7 +3545,7 @@ impl Processor {
         Self::check_account_readonly(amm_target_orders_info)?;
         Self::check_account_readonly(amm_coin_vault_info)?;
         Self::check_account_readonly(amm_pc_vault_info)?;
-        Self::check_account_readonly(amm_lp_mint_info)?;
+        // Self::check_account_readonly(amm_lp_mint_info)?;
         Self::check_account_readonly(market_info)?;
         Self::check_account_readonly(market_event_queue_info)?;
         Self::check_account_readonly(user_source_info)?;
@@ -3596,12 +3596,12 @@ impl Processor {
                 "target_orders",
                 AmmError::InvalidTargetOrders
             );
-            check_assert_eq!(
-                *amm_lp_mint_info.key,
-                amm.lp_mint,
-                "lp_mint",
-                AmmError::InvalidPoolMint
-            );
+            // check_assert_eq!(
+            //     *amm_lp_mint_info.key,
+            //     amm.lp_mint,
+            //     "lp_mint",
+            //     AmmError::InvalidPoolMint
+            // );
             check_assert_eq!(
                 *market_program_info.key,
                 amm.market_program,
@@ -3635,7 +3635,7 @@ impl Processor {
             let amm_coin_vault =
                 Self::unpack_token_account(&amm_coin_vault_info, &spl_token::id())?;
             let amm_pc_vault = Self::unpack_token_account(&amm_pc_vault_info, &spl_token::id())?;
-            let lp_mint = Self::unpack_mint(&amm_lp_mint_info, &spl_token::id())?;
+            // let lp_mint = Self::unpack_mint(&amm_lp_mint_info, &spl_token::id())?;
 
             let user_source = Self::unpack_token_account(&user_source_info, &spl_token::id())?;
             let user_destination =
@@ -3667,7 +3667,7 @@ impl Processor {
             swap_base_in.pool_data.status = amm.status;
             swap_base_in.pool_data.coin_decimals = amm.coin_decimals;
             swap_base_in.pool_data.pc_decimals = amm.pc_decimals;
-            swap_base_in.pool_data.lp_decimals = lp_mint.decimals.into();
+            // swap_base_in.pool_data.lp_decimals = lp_mint.decimals.into();
             swap_base_in.pool_data.pool_lp_supply = amm.lp_amount;
             swap_base_in.pool_data.pool_open_time = amm.state_data.pool_open_time;
             swap_base_in.pool_data.pool_pc_amount = total_pc_without_take_pnl;
