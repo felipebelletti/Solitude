@@ -5,7 +5,8 @@ use raydium_amm::instruction::{AmmInstruction, SwapInstructionBaseIn};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
-    system_instruction, program_error::ProgramError,
+    program_error::ProgramError,
+    system_instruction, system_program,
 };
 use solana_sdk::{
     account::ReadableAccount,
@@ -15,6 +16,7 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::{Keypair, Signer},
 };
+use solana_transaction_status::parse_associated_token::spl_associated_token_id;
 use spl_associated_token_account::get_associated_token_address;
 
 use self::market::PoolKey;
@@ -202,6 +204,7 @@ struct InstructionArgs {
     target_timestamp: i64,
     amount_in: u64,
     minimum_amount_out: u64,
+    bribe_amount: u64,
 }
 
 impl InstructionArgs {
@@ -211,19 +214,26 @@ impl InstructionArgs {
         bytes.extend_from_slice(&self.target_timestamp.to_le_bytes());
         bytes.extend_from_slice(&self.amount_in.to_le_bytes());
         bytes.extend_from_slice(&self.minimum_amount_out.to_le_bytes());
+        bytes.extend_from_slice(&self.bribe_amount.to_le_bytes());
 
         Ok(bytes)
     }
 }
 
-pub async fn get_modded_swap_instr(
+#[derive(Debug, Clone)]
+pub struct InitializedSwapData {
+    pub initialize_swap_chain: Vec<Instruction>,
+    pub swap_user_src_token_account: Pubkey,
+    pub swap_user_dest_token_account: Pubkey,
+}
+
+pub async fn get_modded_initialize_swap_instr(
     rpc_client: &RpcClient,
     signer_keypair: &Keypair,
-    pool_key: &PoolKey,
     paired_addr: &Pubkey,
     token_addr: &Pubkey,
     sol_amount: f64,
-) -> Result<Vec<Instruction>, Box<dyn Error>> {
+) -> Result<InitializedSwapData, Box<dyn Error>> {
     let mut instr_chain: Vec<Instruction> =
         vec![ComputeBudgetInstruction::set_compute_unit_limit(352385)];
 
@@ -257,24 +267,48 @@ pub async fn get_modded_swap_instr(
     )?;
     instr_chain.push(initialize_user_paired_account_instr);
 
-    let associated_account_exists: bool =
-        match rpc_client.get_account(&user_target_token_account).await {
-            Ok(account) => !account.data.is_empty(),
-            Err(_) => false,
-        };
+    // this part is already being done within our custom program
+    // let associated_account_exists: bool =
+    //     match rpc_client.get_account(&user_target_token_account).await {
+    //         Ok(account) => !account.data.is_empty(),
+    //         Err(_) => false,
+    //     };
 
-    if !associated_account_exists {
-        println!("Creating associated account");
-        let create_associated_account_instr =
-            spl_associated_token_account::instruction::create_associated_token_account(
-                &signer_keypair.pubkey(),
-                &signer_keypair.pubkey(),
-                &token_addr,
-                &spl_token::id(),
-            );
-        instr_chain.push(create_associated_account_instr);
-    };
+    // if !associated_account_exists {
+    //     println!("Creating associated account");
+    //     let create_associated_account_instr =
+    //         spl_associated_token_account::instruction::create_associated_token_account(
+    //             &signer_keypair.pubkey(),
+    //             &signer_keypair.pubkey(),
+    //             &token_addr,
+    //             &spl_token::id(),
+    //         );
+    //     instr_chain.push(create_associated_account_instr);
+    // };
 
+    return Ok(InitializedSwapData {
+        initialize_swap_chain: instr_chain,
+        swap_user_src_token_account: *created_user_paired_account,
+        swap_user_dest_token_account: user_target_token_account,
+    });
+}
+
+pub fn get_modded_swap_chain(
+    pool_key: &PoolKey,
+    InitializedSwapData {
+        mut initialize_swap_chain,
+        swap_user_src_token_account,
+        swap_user_dest_token_account,
+    }: InitializedSwapData,
+    signer_keypair: &Keypair,
+    target_timestamp: i64,
+    sol_amount: f64,
+    min_amount_out_raw: u64,
+
+    jito_bribe_wallet: &Pubkey,
+    bribe_amount: f64,
+    target_token_address: &Pubkey,
+) -> Result<Vec<Instruction>, Box<dyn Error>> {
     let swap_accounts = vec![
         // raydium program id (modded addition)
         AccountMeta::new_readonly(*market::RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM, false),
@@ -297,22 +331,39 @@ pub async fn get_modded_swap_instr(
         AccountMeta::new(pool_key.market_quote_vault, false),
         AccountMeta::new(pool_key.market_authority, false),
         // user
-        AccountMeta::new(*created_user_paired_account, false),
-        AccountMeta::new(user_target_token_account, false),
+        AccountMeta::new(swap_user_src_token_account, false),
+        AccountMeta::new(swap_user_dest_token_account, false),
         AccountMeta::new(signer_keypair.pubkey(), true),
+
+        AccountMeta::new(*jito_bribe_wallet, false),
+        AccountMeta::new(system_program::id(), false),
+        AccountMeta::new(*target_token_address, false),
+        AccountMeta::new(spl_associated_token_id(), false),
+
+        AccountMeta::new(Pubkey::from_str("SysvarRent111111111111111111111111111111111")?, false),
     ];
     let swap_instr = Instruction {
         accounts: swap_accounts.clone(),
         data: InstructionArgs {
-            target_timestamp: 0,
+            target_timestamp: target_timestamp,
             amount_in: sol_to_lamports(sol_amount),
-            minimum_amount_out: 0,
-        }.pack()?,
+            minimum_amount_out: min_amount_out_raw,
+            bribe_amount: sol_to_lamports(bribe_amount),
+        }
+        .pack()?,
         program_id: Pubkey::from_str("3P8CEysLPnSrxubpryya8jUCXgzDdassi3nMQ7D2mXcS")?,
     };
-    instr_chain.push(swap_instr);
 
-    println!("Swap Accounts (from client-side): {:#?}", &swap_accounts);
+    let close_user_src_token_account = spl_token::instruction::close_account(
+        &spl_token::id(),            // Token Program
+        &swap_user_src_token_account, // Account
+        &signer_keypair.pubkey(),    // Destination
+        &signer_keypair.pubkey(),    // Owner
+        &[],                         // MultiSigners
+    )
+    .expect("close_account failed");
 
-    return Ok(instr_chain);
+    initialize_swap_chain.extend_from_slice(&[swap_instr, close_user_src_token_account]);
+
+    Ok(initialize_swap_chain)
 }

@@ -1,18 +1,31 @@
 use jito::{
-    client_interceptor::ClientInterceptor, cluster_data_impl::ClusterDataImpl,
-    SearcherClient, SearcherClientError,
+    client_interceptor::ClientInterceptor, cluster_data_impl::ClusterDataImpl, SearcherClient,
+    SearcherClientError,
 };
 use jito_protos::bundle::BundleResult;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{transaction::VersionedTransaction, signature::Keypair};
-use std::{sync::{Arc, atomic::{Ordering, AtomicBool}}, time::Duration, panic::{self, PanicInfo}, process, error::Error};
+use solana_sdk::{signature::Keypair, transaction::VersionedTransaction};
+use std::{
+    error::Error,
+    panic::{self, PanicInfo},
+    process,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+use tokio::{sync::mpsc, task::JoinHandle};
 use tonic::{service::interceptor::InterceptedService, transport::Channel};
-use tokio::{task::JoinHandle, sync::mpsc};
 
-use crate::{jito::{self, BundleId}};
+use crate::{
+    config::wallet,
+    jito::{self, BundleId},
+};
 
 pub struct MevHelpers {
-    pub searcher_clients: Vec<Arc<SearcherClient<ClusterDataImpl, InterceptedService<Channel, ClientInterceptor>>>>,
+    pub searcher_clients:
+        Vec<Arc<SearcherClient<ClusterDataImpl, InterceptedService<Channel, ClientInterceptor>>>>,
 }
 
 impl MevHelpers {
@@ -26,14 +39,23 @@ impl MevHelpers {
             .unwrap(),
         );
 
-        let rpc_pubsub_addr = "http://127.0.0.1";
+        let rpc_pubsub_addr = "http://127.0.0.1:8900";
 
-        let block_engine_urls = vec![
-            "https://frankfurt.mainnet.block-engine.jito.wtf",
-            "https://amsterdam.mainnet.block-engine.jito.wtf",
-            "https://ny.mainnet.block-engine.jito.wtf",
-            // "https://tokyo.mainnet.block-engine.jito.wtf",
-        ];
+        let block_engine_urls = {
+            if wallet::read_from_wallet_file().testnet {
+                vec![
+                    // "https://dallas.testnet.block-engine.jito.wtf",
+                    "https://ny.testnet.block-engine.jito.wtf"
+                ]
+            } else {
+                vec![
+                    "https://frankfurt.mainnet.block-engine.jito.wtf",
+                    "https://amsterdam.mainnet.block-engine.jito.wtf",
+                    "https://ny.mainnet.block-engine.jito.wtf",
+                    // "https://tokyo.mainnet.block-engine.jito.wtf",
+                ]
+            }
+        };
 
         let mut searcher_clients = Vec::new();
         for url in block_engine_urls.iter() {
@@ -54,7 +76,10 @@ impl MevHelpers {
         Ok(Self { searcher_clients })
     }
 
-    pub async fn subscribe_mempool_programs(&self, watch_mempool_addresses: &[Pubkey]) -> mpsc::Receiver<VersionedTransaction> {
+    pub async fn subscribe_mempool_programs(
+        &self,
+        watch_mempool_addresses: &[Pubkey],
+    ) -> mpsc::Receiver<VersionedTransaction> {
         let (tx, rx) = mpsc::channel(1024);
 
         for searcher_client in self.searcher_clients.iter() {
@@ -88,7 +113,10 @@ impl MevHelpers {
         rx
     }
 
-    pub async fn susbcribe_mempool_accounts(&self, watch_mempool_addresses: &[Pubkey]) -> mpsc::Receiver<VersionedTransaction> {
+    pub async fn susbcribe_mempool_accounts(
+        &self,
+        watch_mempool_addresses: &[Pubkey],
+    ) -> mpsc::Receiver<VersionedTransaction> {
         let (tx, rx) = mpsc::channel(1024);
 
         for searcher_client in self.searcher_clients.iter() {
@@ -124,13 +152,13 @@ impl MevHelpers {
 
     pub async fn listen_for_bundle_results(&self) -> mpsc::Receiver<BundleResult> {
         let (tx, rx) = mpsc::channel(1024);
-    
+
         for searcher_client in self.searcher_clients.iter() {
             let mut bundle_results_receiver = searcher_client
                 .subscribe_bundle_results(1024)
                 .await
                 .expect("Failed to subscribe to bundle results");
-    
+
             let tx_clone = tx.clone();
             tokio::spawn(async move {
                 while let Some(bundle_result) = bundle_results_receiver.recv().await {
@@ -141,19 +169,23 @@ impl MevHelpers {
                 }
             });
         }
-    
+
         rx
-    }    
+    }
 
-    pub async fn broadcast_bundle_to_all_engines(&self, bundle_txs: Vec<VersionedTransaction>) -> Vec<JoinHandle<Result<BundleId, SearcherClientError>>> {
-        self.searcher_clients.iter().map(|client| {
-            let client_clone = Arc::clone(client);
-            let bundle_txs_clone = bundle_txs.clone();
+    pub async fn broadcast_bundle_to_all_engines(
+        &self,
+        bundle_txs: Vec<VersionedTransaction>,
+    ) -> Vec<JoinHandle<Result<BundleId, SearcherClientError>>> {
+        self.searcher_clients
+            .iter()
+            .map(|client| {
+                let client_clone = Arc::clone(client);
+                let bundle_txs_clone = bundle_txs.clone();
 
-            tokio::spawn(async move {
-                client_clone.send_bundle(bundle_txs_clone).await
+                tokio::spawn(async move { client_clone.send_bundle(bundle_txs_clone).await })
             })
-        }).collect()
+            .collect()
     }
 }
 
