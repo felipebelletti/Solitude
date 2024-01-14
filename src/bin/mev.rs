@@ -102,6 +102,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //     market_account_pubkey,
     //     pool_key,
     //     buy_amount,
+    //     pool_open_time: _,
     // } = get_required_token_data(&rpc_pda_client, &wallet, Some(Pubkey::from_str("9dmdch3syLAk4z8x6gRbVFMhofiw5NK22uTUfvsS4DSs").unwrap())).await?;
 
     // mainnet
@@ -111,12 +112,66 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //     market_account_pubkey,
     //     pool_key,
     //     buy_amount,
+    //     pool_open_time: _,
     // } = get_required_token_data(
     //     &rpc_pda_client,
     //     &wallet,
     //     Some(Pubkey::from_str("GdP4Gx77FvJbcxAzVTuzChT33uZMe5XEn26AtYszrNXy").unwrap()),
     // )
     // .await?;
+    // let mut cached_blockhash = rpc_client
+    // .get_latest_blockhash_with_commitment(CommitmentConfig {
+    //     commitment: CommitmentLevel::Confirmed,
+    // })
+    // .await?
+    // .0;
+    // let initialized_swap_data: InitializedSwapData = raydium::get_modded_initialize_swap_instr(
+    //     &rpc_client,
+    //     &main_keypair,
+    //     &paired_addr,
+    //     &target_addr,
+    //     buy_amount,
+    // )
+    // .await?;
+    // let full_swap_chain = raydium::get_modded_swap_chain(
+    //     &pool_key,
+    //     initialized_swap_data.clone(),
+    //     &main_keypair,
+    //     0,
+    //     buy_amount,
+    //     0,
+
+    //     &generate_tip_account(),
+    //     wallet.bribe_amount,
+    //     &target_addr,
+    // ).unwrap();
+    // let transaction = VersionedTransaction::from(Transaction::new_signed_with_payer(
+    //     &full_swap_chain,
+    //     Some(&main_keypair.pubkey()),
+    //     &[main_keypair.as_ref()],
+    //     cached_blockhash,
+    // ));
+    // loop {
+    //     // let tx = rpc_client.send_transaction_with_config(&transaction, RpcSendTransactionConfig {
+    //     //     skip_preflight: true,
+    //     //     ..Default::default()
+    //     // }).await;
+    //     // println!("{:?}", tx);
+
+    //     match rpc_client.send_and_confirm_transaction_with_spinner(&transaction).await {
+    //         Ok(sig) => {
+    //             println!("Transaction sent: {}", sig);
+    //             // break;
+    //         }
+    //         Err(e) => {
+    //             println!("Error sending transaction: {:#?}", e);
+    //             sleep(Duration::from_secs(1));
+    //             continue;
+    //         }
+    //     };
+    // }
+    // return Ok(());
+
 
     // spam_bundle_snipe(
     //     &rpc_client,
@@ -306,39 +361,6 @@ async fn spam_bundle_snipe(
 
     // let mut blockhash_tick = tokio::time::interval(Duration::from_secs(5));
     let mut spam_tick = tokio::time::interval(Duration::from_millis(250));
-
-    // let full_swap_chain = raydium::get_modded_swap_chain(
-    //     &pool_key,
-    //     initialized_swap_data.clone(),
-    //     &main_keypair,
-    //     target_timestamp,
-    //     buy_amount,
-    //     0,
-
-    //     &tip_account,
-    //     wallet.bribe_amount,
-    //     &target_addr,
-    // ).unwrap();
-    // let transaction = VersionedTransaction::from(Transaction::new_signed_with_payer(
-    //     &full_swap_chain,
-    //     Some(&main_keypair.pubkey()),
-    //     &[main_keypair.as_ref()],
-    //     cached_blockhash,
-    // ));
-    // loop {
-    //     match rpc_client.send_and_confirm_transaction_with_spinner(&transaction).await {
-    //         Ok(sig) => {
-    //             println!("Transaction sent: {}", sig);
-    //             // break;
-    //         }
-    //         Err(e) => {
-    //             println!("Error sending transaction: {:#?}", e);
-    //             sleep(Duration::from_secs(1));
-    //             continue;
-    //         }
-    //     };
-    // }
-    // return Ok(());
 
     /*
     let (searcher_client, _) = jito::get_searcher_client(
