@@ -5,7 +5,7 @@ use jito_protos::{bundle::bundle_result, searcher};
 use rand::{seq::SliceRandom, thread_rng, Rng};
 
 use raydium_amm::state::GetPoolData;
-use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcTransactionConfig};
 use solana_program::{
     instruction::{CompiledInstruction, Instruction},
     program_option::COption,
@@ -15,7 +15,7 @@ use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
     native_token::sol_to_lamports,
     pubkey::Pubkey,
-    signature::{Keypair, Signer},
+    signature::{Keypair, Signer, Signature},
     system_instruction::transfer,
     transaction::{Transaction, VersionedTransaction},
 };
@@ -59,13 +59,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .expect("Time went backwards");
     let current_date: DateTime<Utc> =
         Utc.timestamp(current_time.as_secs() as i64, current_time.subsec_nanos());
-    let cutoff_date: DateTime<Utc> = Utc.ymd(2024, 1, 16).and_hms(0, 0, 0);
+    let cutoff_date: DateTime<Utc> = Utc.ymd(2024, 1, 18).and_hms(0, 0, 0);
 
     if current_date >= cutoff_date {
         panic!("get out");
     }
 
-    println!("A wild mev appeared ~ 0.2.9");
+    println!("A wild mev appeared ~ 0.2.9a");
 
     let wallet = Arc::new(config::wallet::read_from_wallet_file());
 
