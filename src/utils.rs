@@ -326,7 +326,7 @@ pub async fn sell_stream(
                         .unwrap_or(&-0)
                         .clone();
                     println!(
-                        "{} {} {}\n⮩ Hash: {}\n⮩ {}: {}\n{}",
+                        "{} {} {}\n⮩ Hash: {}\n⮩ {}: {}\n{}\n",
                         "---------".green().bold(),
                         "Sell transaction confirmed".green().bold(),
                         "---------".green().bold(),
@@ -963,7 +963,14 @@ pub async fn get_balance_changes(
         };
 
         let post_token_balance: i128 = {
-            let ui = post_token_balances.get(i).unwrap();
+            let ui = match post_token_balances.get(i) {
+                Some(ui) => ui,
+                None => {
+                    println!("Pre token balance: {:#?}", pre_token_balances);
+                    println!("Post token balance: {:#?}", post_token_balances);
+                    return Err("Failed to get post_token_balance".into());
+                }
+            };
             ui.ui_token_amount
                 .amount
                 .parse()
