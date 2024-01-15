@@ -5003,6 +5003,7 @@ dependencies = [
 name = "solitude"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64 0.21.5",
  "bincode",
  "bs58 0.5.0",
