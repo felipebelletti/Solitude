@@ -331,7 +331,7 @@ async fn spam_bundle_snipe(
             .prompt()?
             .parse()?,
     };
-    let target_start_time = target_timestamp - 10;
+    let target_start_time = target_timestamp - 5;
 
     let tip_account = generate_tip_account();
     let mev_helpers = Arc::new(
@@ -420,7 +420,7 @@ async fn spam_bundle_snipe(
                 if current_timestamp < target_start_time {
                     continue;
                 }
-                if current_timestamp > target_timestamp + 2 {
+                if current_timestamp > target_timestamp + 1 {
                     continue
                     // println!("Target timestamp reached, exiting...");
                     // break;
@@ -467,7 +467,7 @@ async fn spam_bundle_snipe(
                 })
                 .await.unwrap()
                 .0;
-                let min_amount_out = thread_rng().gen_range(0..50);
+                let min_amount_out = thread_rng().gen_range(0..100);
                 let full_swap_chain = raydium::get_modded_swap_chain(
                     &pool_key,
                     initialized_swap_data.clone(),
@@ -546,7 +546,7 @@ async fn spam_bundle_snipe(
                             println!("\x1b[92m{} | Bundle {} was ACCEPTED on slot {} by validator {}\x1b[0m", utils::now_ms(), bundle_result.bundle_id, _accepted_result.slot, _accepted_result.validator_identity);
                         },
                         Some(bundle_result::Result::Rejected(_rejected_result)) => {
-                            // println!("{} | Bundle {} was rejected, reason: {:?}", utils::now_ms(), bundle_result.bundle_id, _rejected_result.reason.expect("!reason"));
+                            println!("{} | Bundle {} was rejected, reason: {:?}", utils::now_ms(), bundle_result.bundle_id, _rejected_result.reason.expect("!reason"));
                         },
                         Some(bundle_result::Result::Processed(_processed_result)) => {
                             // println!("{} | Bundle {} was processed on slot {} by validator {} with bundle index of {}", utils::now_ms(), bundle_result.bundle_id, _processed_result.slot, _processed_result.validator_identity, _processed_result.bundle_index);
