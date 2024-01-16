@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .expect("Time went backwards");
     let current_date: DateTime<Utc> =
         Utc.timestamp(current_time.as_secs() as i64, current_time.subsec_nanos());
-    let cutoff_date: DateTime<Utc> = Utc.ymd(2024, 1, 16).and_hms(0, 0, 0);
+    let cutoff_date: DateTime<Utc> = Utc.ymd(2024, 1, 22).and_hms(0, 0, 0);
 
     if current_date >= cutoff_date {
         panic!("get out");
