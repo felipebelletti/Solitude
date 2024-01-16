@@ -11,6 +11,7 @@ use solana_client::rpc_config::RpcTransactionConfig;
 use solana_program::native_token::lamports_to_sol;
 use solana_program::native_token::sol_to_lamports;
 use solana_program::system_instruction::transfer;
+use solana_sdk::account::ReadableAccount;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::commitment_config::CommitmentLevel;
 use solana_sdk::signature::Signature;
@@ -332,8 +333,12 @@ pub async fn sell_stream(
                         "---------".green().bold(),
                         supposed_sell_hash.to_string().bright_purple(),
                         "Sold for ".green().bold(),
-                        lamports_to_sol(signer_sol_balance_changes as u64).to_string().bright_yellow(),
-                        "----------------------------------------------".green().bold(),
+                        (lamports_to_sol(signer_sol_balance_changes as u64)
+                            .to_string() + " SOL")
+                            .bright_yellow(),
+                        "----------------------------------------------"
+                            .green()
+                            .bold(),
                     );
                 });
             }
@@ -362,6 +367,7 @@ pub async fn sell_stream(
             &pda_client,
             pool_key,
             market_account,
+            target_token_addr,
             paired_token_addr,
             &target_token_token_account,
             &paired_token_token_account,
@@ -469,6 +475,7 @@ async fn simulate_swap(
     client: &RpcClient,
     pool_key: &PoolKey,
     market_account: &Pubkey,
+    target_token_addr: &Pubkey,
     paired_token_addr: &Pubkey,
     target_token_token_account: &Pubkey,
     paired_token_token_account: &Pubkey,
@@ -570,41 +577,39 @@ async fn simulate_swap(
         };
     };
 
-    let mut user_source_account = loop {
-        match client
-            .get_account_with_commitment(
-                &target_token_token_account,
-                CommitmentConfig {
-                    commitment: CommitmentLevel::Processed,
-                },
-            )
-            .await?
-            .value
-        {
-            Some(user_source_account) => break user_source_account,
-            None => {
-                println!(
-                    "\r\n\x1B[2K{}",
-                    "No user_source_account found for target token (if you just sniped some token, just wait a little bit)".red().bold()
-                );
-                continue;
-            }
+    let mut forged_user_source_account: Account = {
+        let mut account = Account::new(1, 165, &spl_token::id());
+        account.data = {
+            let forged_spl_dest_account = spl_token::state::Account {
+                mint: *target_token_addr,
+                owner: bought_wallet_address.clone(),
+                state: spl_token::state::AccountState::Initialized,
+                amount: token_balance,
+                ..Default::default()
+            };
+            let mut data = vec![0u8; spl_token::state::Account::LEN];
+            spl_token::state::Account::pack(forged_spl_dest_account, &mut data)?;
+            data
         };
+        account
     };
 
-    let mut user_dest_account = Account::new(1, 165, &spl_token::id());
-
-    user_dest_account.data = {
-        let forged_spl_dest_account = spl_token::state::Account {
-            mint: paired_token_addr.clone(),
-            owner: bought_wallet_address.clone(),
-            state: spl_token::state::AccountState::Initialized,
-            ..Default::default()
+    let mut forged_user_dest_account: Account = {
+        let mut account = Account::new(1, 165, &spl_token::id());
+        account.data = {
+            let forged_spl_dest_account = spl_token::state::Account {
+                mint: paired_token_addr.clone(),
+                owner: bought_wallet_address.clone(),
+                state: spl_token::state::AccountState::Initialized,
+                ..Default::default()
+            };
+            let mut data = vec![0u8; spl_token::state::Account::LEN];
+            spl_token::state::Account::pack(forged_spl_dest_account, &mut data)?;
+            data
         };
-        let mut data = vec![0u8; spl_token::state::Account::LEN];
-        spl_token::state::Account::pack(forged_spl_dest_account, &mut data)?;
-        data
+        account
     };
+
 
     let mut amm_account_clone = amm_account.clone();
     let mut amm_authority_account_clone = amm_authority_account.clone();
@@ -632,8 +637,12 @@ async fn simulate_swap(
             false,
             &mut market_event_queue_account_clone,
         ),
-        (&target_token_token_account, false, &mut user_source_account),
-        (&paired_token_token_account, false, &mut user_dest_account),
+        (
+            &target_token_token_account,
+            false,
+            &mut forged_user_source_account,
+        ),
+        (&paired_token_token_account, false, &mut forged_user_dest_account),
         (
             &bought_wallet_address,
             true,
@@ -707,12 +716,24 @@ pub async fn confirm_transaction(
     let delay = delay;
 
     while tries > 0 {
-        let confirmed_tx = match client.confirm_transaction_with_commitment(&hash, CommitmentConfig {
-            commitment: CommitmentLevel::Processed,
-        }).await {
+        let confirmed_tx = match client
+            .confirm_transaction_with_commitment(
+                &hash,
+                CommitmentConfig {
+                    commitment: CommitmentLevel::Processed,
+                },
+            )
+            .await
+        {
             Ok(confirmed_tx) => confirmed_tx.value,
             Err(e) => {
-                eprintln!("\r\n\x1B[2K{}: {:?}", "Failed to get transaction status (retrying...)".red().bold(), e.kind);
+                eprintln!(
+                    "\r\n\x1B[2K{}: {:?}",
+                    "Failed to get transaction status (retrying...)"
+                        .red()
+                        .bold(),
+                    e.kind
+                );
                 continue;
             }
         };
