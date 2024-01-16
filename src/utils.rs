@@ -707,9 +707,15 @@ pub async fn confirm_transaction(
     let delay = delay;
 
     while tries > 0 {
-        let confirmed_tx = client.confirm_transaction_with_commitment(&hash, CommitmentConfig {
+        let confirmed_tx = match client.confirm_transaction_with_commitment(&hash, CommitmentConfig {
             commitment: CommitmentLevel::Processed,
-        }).await?.value;
+        }).await {
+            Ok(confirmed_tx) => confirmed_tx.value,
+            Err(e) => {
+                eprintln!("\r\n\x1B[2K{}: {:?}", "Failed to get transaction status (retrying...)".red().bold(), e.kind);
+                continue;
+            }
+        };
         if confirmed_tx {
             return Ok(true);
         }
