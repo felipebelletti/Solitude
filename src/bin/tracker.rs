@@ -154,8 +154,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     return;
                                 }
                             };
-                            let target_token_address =
-                                accounts[*target_token_address_index as usize];
+                            let target_token_address = {
+                                if target_token_address_index > &accounts.len() as &u8 {
+                                    println!("target_token_address_index > accounts.len()");
+                                    Pubkey::default()
+                                } else {
+                                    accounts[*target_token_address_index as usize]
+                                }
+                            };
 
                             let person = match wallet_to_person_clone.lock().unwrap().get(&signer) {
                                 Some(value) => value,

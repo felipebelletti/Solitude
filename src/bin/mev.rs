@@ -17,7 +17,7 @@ use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
     native_token::sol_to_lamports,
     pubkey::Pubkey,
-    signature::{Keypair, Signer},
+    signature::{Keypair, Signer, Signature},
     system_instruction::transfer,
     transaction::{Transaction, VersionedTransaction},
 };
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         panic!("get out");
     }
 
-    println!("A wild mev appeared ~ 0.2.8");
+    println!("A wild mev appeared ~ 0.2.9b");
 
     let wallet = Arc::new(config::wallet::read_from_wallet_file());
 

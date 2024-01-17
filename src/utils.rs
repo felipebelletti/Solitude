@@ -1,7 +1,5 @@
 use base64::encode;
 use colored::*;
-use futures_util::future::ready;
-use futures_util::Future;
 use inquire::CustomUserError;
 use openssl::symm::Cipher;
 use openssl::symm::Crypter;
@@ -9,31 +7,28 @@ use openssl::symm::Mode;
 use rand::thread_rng;
 use rand::Rng;
 use raydium_amm::state::GetPoolData;
+use solana_client::rpc_config::RpcTransactionConfig;
 use solana_program::native_token::lamports_to_sol;
 use solana_program::native_token::sol_to_lamports;
 use solana_program::system_instruction::transfer;
+use solana_sdk::account::ReadableAccount;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::commitment_config::CommitmentLevel;
 use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
 use solana_sdk::transaction::VersionedTransaction;
+use solana_transaction_status::option_serializer::OptionSerializer;
+use std::collections::HashMap;
 use std::env;
 use std::error::Error;
-use std::io::BufRead;
 use std::io::Write;
 use std::io::{self, Read};
 use std::net::TcpStream;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::thread;
-use std::thread::spawn;
 use termion::event::Key;
 use termion::input::TermRead;
-use termion::raw::IntoRawMode;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::task;
 use tokio::time::sleep;
 
 use chrono::format::DelayedFormat;
@@ -107,71 +102,48 @@ pub async fn sell_stream(
 
     let bought_wallet_address = &bought_wallet.pubkey();
 
-    let token_account = loop {
-        let binding = pda_client
-            .get_token_accounts_by_owner_with_commitment(
-                bought_wallet_address,
-                TokenAccountsFilter::Mint(*target_token_addr),
-                CommitmentConfig {
-                    commitment: CommitmentLevel::Processed,
-                },
-            )
-            .await?
-            .value;
-        let token_account = match binding.first() {
-            Some(token_account) => token_account.clone(),
-            None => {
-                println!(
-                    "\r\n\x1B[2K{}",
-                    "No token account found for target token (if you just sniped some token, just wait a little bit)".red().bold()
-                );
-                continue;
-            }
-        };
-        break token_account;
-    };
-    let token_account_addr = { Pubkey::from_str(&token_account.pubkey)? };
-
-    let _lp_mint_addr = get_associated_lp_mint(
-        &raydium_contract_instructions::amm_instruction::ID,
-        &pool_key.market_id,
-    )?;
-
     let paired_token_token_account =
         get_associated_token_address(&bought_wallet.pubkey(), &paired_token_addr);
 
     let target_token_token_account =
         get_associated_token_address(&bought_wallet.pubkey(), &target_token_addr);
 
-    println!("test 1");
-
     // cached data
-    let mut amm_account = client.get_account_with_commitment(&pool_key.id, CommitmentConfig {
-        commitment: CommitmentLevel::Processed,
-    }).await?.value.unwrap();
-    let mut market_info_account = client.get_account_with_commitment(&market_account, CommitmentConfig {
-        commitment: CommitmentLevel::Processed,
-    }).await?.value.unwrap();
-    let mut amm_authority_account = client.get_account_with_commitment(&pool_key.authority, CommitmentConfig {
-        commitment: CommitmentLevel::Processed,
-    }).await?.value.unwrap();
-    let mut market_program_account = client.get_account_with_commitment(&pool_key.market_program_id, CommitmentConfig {
-        commitment: CommitmentLevel::Processed,
-    }).await?.value.unwrap();
-    let mut market_event_queue_account = client.get_account_with_commitment(&pool_key.market_event_queue, CommitmentConfig {
-        commitment: CommitmentLevel::Processed,
-    }).await?.value.unwrap();
-    let mut user_source_owner_account = client.get_account_with_commitment(&bought_wallet_address, CommitmentConfig {
-        commitment: CommitmentLevel::Processed,
-    }).await?.value.unwrap();
+    let mut amm_account =
+        loop_get_account(&client, &pool_key.id, "Failed to get amm account").await?;
+    let mut market_info_account =
+        loop_get_account(&client, market_account, "Failed to get market info account").await?;
+    let mut amm_authority_account = loop_get_account(
+        &client,
+        &pool_key.authority,
+        "Failed to get amm authority account",
+    )
+    .await?;
+    let mut market_program_account = loop_get_account(
+        &client,
+        &pool_key.market_program_id,
+        "Failed to get market program account",
+    )
+    .await?;
+    let mut market_event_queue_account = loop_get_account(
+        &client,
+        &pool_key.market_event_queue,
+        "Failed to get market event queue account",
+    )
+    .await?;
+    let mut user_source_owner_account = loop_get_account(
+        &client,
+        bought_wallet_address,
+        "Failed to get user source owner account",
+    )
+    .await?;
 
     let tip_account = generate_tip_account();
-    println!("test 2");
 
     let mut token_balance: u64 = loop {
         match pda_client
         .get_token_account_balance_with_commitment(
-            &token_account_addr,
+            &target_token_token_account,
             CommitmentConfig {
                 commitment: CommitmentLevel::Processed,
             },
@@ -189,8 +161,6 @@ pub async fn sell_stream(
         };
     };
 
-    println!("test 3");
-
     let mut is_stream_stopped = false;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -202,8 +172,6 @@ pub async fn sell_stream(
             }
         }
     });
-
-    // println!("Starting loop");
 
     loop {
         if let Ok(key) = rx.try_recv() {
@@ -330,17 +298,14 @@ pub async fn sell_stream(
                 );
 
                 let client_clone = pda_client.clone();
+                let seller_address = bought_wallet_address.clone();
                 tokio::spawn(async move {
                     match confirm_transaction(&client_clone, supposed_sell_hash, 1000, 120).await {
                         Ok(confirmed_sell_tx) => {
                             if !confirmed_sell_tx {
                                 println!("\r\n\x1B[2K{}", "Sell transaction failed!".red().bold());
+                                return;
                             }
-                            println!(
-                                "\r\n\x1B[2K{} | {:?}",
-                                "Sell transaction confirmed".green().bold(),
-                                supposed_sell_hash
-                            );
                         }
                         Err(e) => {
                             eprintln!(
@@ -348,8 +313,42 @@ pub async fn sell_stream(
                                 "Failed to confirm sell transaction".red().bold(),
                                 e
                             );
+                            return;
                         }
                     };
+
+                    let balance_changes =
+                        match get_balance_changes(&client_clone, &supposed_sell_hash, true).await {
+                            Ok(balance_changes) => balance_changes,
+                            Err(e) => {
+                                eprintln!(
+                                    "\r\n\x1B[2K{}: {:?}",
+                                    "Failed to get balance changes".red().bold(),
+                                    e
+                                );
+                                return;
+                            }
+                        };
+
+                    let signer_sol_balance_changes = balance_changes
+                        .sol_balance_changes
+                        .get(&seller_address)
+                        .unwrap_or(&-0)
+                        .clone();
+                    println!(
+                        "{} {} {}\n⮩ Hash: {}\n⮩ {}: {}\n{}\n",
+                        "---------".green().bold(),
+                        "Sell transaction confirmed".green().bold(),
+                        "---------".green().bold(),
+                        supposed_sell_hash.to_string().bright_purple(),
+                        "Sold for ".green().bold(),
+                        (lamports_to_sol(signer_sol_balance_changes as u64)
+                            .to_string() + " SOL")
+                            .bright_yellow(),
+                        "----------------------------------------------"
+                            .green()
+                            .bold(),
+                    );
                 });
             }
         }
@@ -358,11 +357,10 @@ pub async fn sell_stream(
             continue;
         }
 
-        // println!("Getting token balance...");
         let t0 = time::Instant::now();
         token_balance = client
             .get_token_account_balance_with_commitment(
-                &token_account_addr,
+                &target_token_token_account,
                 CommitmentConfig {
                     commitment: CommitmentLevel::Processed,
                 },
@@ -373,13 +371,12 @@ pub async fn sell_stream(
             .parse()?;
         let t1_token_balance = time::Instant::now();
 
-        // println!("Simulating swap...");
-
         let t2 = time::Instant::now();
         let simulated_swap_data = simulate_swap(
             &pda_client,
             pool_key,
             market_account,
+            target_token_addr,
             paired_token_addr,
             &target_token_token_account,
             &paired_token_token_account,
@@ -487,6 +484,7 @@ async fn simulate_swap(
     client: &RpcClient,
     pool_key: &PoolKey,
     market_account: &Pubkey,
+    target_token_addr: &Pubkey,
     paired_token_addr: &Pubkey,
     target_token_token_account: &Pubkey,
     paired_token_token_account: &Pubkey,
@@ -501,9 +499,16 @@ async fn simulate_swap(
     user_source_owner_account: &Account,
 ) -> Result<GetSwapBaseInData, Box<dyn Error>> {
     let mut open_orders_account = loop {
-        match client.get_account_with_commitment(&pool_key.open_orders, CommitmentConfig {
-            commitment: CommitmentLevel::Processed,
-        }).await?.value {
+        match client
+            .get_account_with_commitment(
+                &pool_key.open_orders,
+                CommitmentConfig {
+                    commitment: CommitmentLevel::Processed,
+                },
+            )
+            .await?
+            .value
+        {
             Some(open_orders_account) => break open_orders_account,
             None => {
                 println!(
@@ -516,9 +521,16 @@ async fn simulate_swap(
     };
 
     let mut target_orders_account = loop {
-        match client.get_account_with_commitment(&pool_key.target_orders, CommitmentConfig {
-            commitment: CommitmentLevel::Processed,
-        }).await?.value {
+        match client
+            .get_account_with_commitment(
+                &pool_key.target_orders,
+                CommitmentConfig {
+                    commitment: CommitmentLevel::Processed,
+                },
+            )
+            .await?
+            .value
+        {
             Some(target_orders_account) => break target_orders_account,
             None => {
                 println!(
@@ -529,11 +541,18 @@ async fn simulate_swap(
             }
         };
     };
-    
+
     let mut coin_vault_account = loop {
-        match client.get_account_with_commitment(&pool_key.base_vault, CommitmentConfig {
-            commitment: CommitmentLevel::Processed,
-        }).await?.value {
+        match client
+            .get_account_with_commitment(
+                &pool_key.base_vault,
+                CommitmentConfig {
+                    commitment: CommitmentLevel::Processed,
+                },
+            )
+            .await?
+            .value
+        {
             Some(coin_vault_account) => break coin_vault_account,
             None => {
                 println!(
@@ -546,9 +565,16 @@ async fn simulate_swap(
     };
 
     let mut pc_vault_account = loop {
-        match client.get_account_with_commitment(&pool_key.quote_vault, CommitmentConfig {
-            commitment: CommitmentLevel::Processed,
-        }).await?.value {
+        match client
+            .get_account_with_commitment(
+                &pool_key.quote_vault,
+                CommitmentConfig {
+                    commitment: CommitmentLevel::Processed,
+                },
+            )
+            .await?
+            .value
+        {
             Some(pc_vault_account) => break pc_vault_account,
             None => {
                 println!(
@@ -560,51 +586,39 @@ async fn simulate_swap(
         };
     };
 
-    let mut lp_mint_account = loop {
-        match client.get_account_with_commitment(&pool_key.lp_mint, CommitmentConfig {
-            commitment: CommitmentLevel::Processed,
-        }).await?.value {
-            Some(lp_mint_account) => break lp_mint_account,
-            None => {
-                println!(
-                    "\r\n\x1B[2K{}",
-                    "No lp mint account found (if you just sniped some token, just wait a little bit)".red().bold()
-                );
-                continue;
-            }
+    let mut forged_user_source_account: Account = {
+        let mut account = Account::new(1, 165, &spl_token::id());
+        account.data = {
+            let forged_spl_dest_account = spl_token::state::Account {
+                mint: *target_token_addr,
+                owner: bought_wallet_address.clone(),
+                state: spl_token::state::AccountState::Initialized,
+                amount: token_balance,
+                ..Default::default()
+            };
+            let mut data = vec![0u8; spl_token::state::Account::LEN];
+            spl_token::state::Account::pack(forged_spl_dest_account, &mut data)?;
+            data
         };
+        account
     };
 
-    let mut user_source_account = loop {
-        match client.get_account_with_commitment(&target_token_token_account, CommitmentConfig {
-            commitment: CommitmentLevel::Processed,
-        }).await?.value {
-            Some(user_source_account) => break user_source_account,
-            None => {
-                println!(
-                    "\r\n\x1B[2K{}",
-                    "No token account found for target token (if you just sniped some token, just wait a little bit)".red().bold()
-                );
-                continue;
-            }
+    let mut forged_user_dest_account: Account = {
+        let mut account = Account::new(1, 165, &spl_token::id());
+        account.data = {
+            let forged_spl_dest_account = spl_token::state::Account {
+                mint: paired_token_addr.clone(),
+                owner: bought_wallet_address.clone(),
+                state: spl_token::state::AccountState::Initialized,
+                ..Default::default()
+            };
+            let mut data = vec![0u8; spl_token::state::Account::LEN];
+            spl_token::state::Account::pack(forged_spl_dest_account, &mut data)?;
+            data
         };
+        account
     };
 
-    let mut user_dest_account = Account::new(1, 165, &spl_token::id());
-
-    user_dest_account.data = {
-        let forged_spl_dest_account = spl_token::state::Account {
-            mint: paired_token_addr.clone(),
-            owner: bought_wallet_address.clone(),
-            state: spl_token::state::AccountState::Initialized,
-            ..Default::default()
-        };
-        let mut data = vec![0u8; spl_token::state::Account::LEN];
-        spl_token::state::Account::pack(forged_spl_dest_account, &mut data)?;
-        data
-    };
-
-    // println!("Accounts loaded into swap-sim...");
 
     let mut amm_account_clone = amm_account.clone();
     let mut amm_authority_account_clone = amm_authority_account.clone();
@@ -620,7 +634,7 @@ async fn simulate_swap(
         (&pool_key.target_orders, false, &mut target_orders_account),
         (&pool_key.base_vault, false, &mut coin_vault_account),
         (&pool_key.quote_vault, false, &mut pc_vault_account),
-        (&pool_key.lp_mint, false, &mut lp_mint_account),
+        // (&pool_key.lp_mint, false, &mut lp_mint_account),
         (
             &pool_key.market_program_id,
             false,
@@ -632,8 +646,12 @@ async fn simulate_swap(
             false,
             &mut market_event_queue_account_clone,
         ),
-        (&target_token_token_account, false, &mut user_source_account),
-        (&paired_token_token_account, false, &mut user_dest_account),
+        (
+            &target_token_token_account,
+            false,
+            &mut forged_user_source_account,
+        ),
+        (&paired_token_token_account, false, &mut forged_user_dest_account),
         (
             &bought_wallet_address,
             true,
@@ -707,7 +725,27 @@ pub async fn confirm_transaction(
     let delay = delay;
 
     while tries > 0 {
-        let confirmed_tx = client.confirm_transaction(&hash).await?;
+        let confirmed_tx = match client
+            .confirm_transaction_with_commitment(
+                &hash,
+                CommitmentConfig {
+                    commitment: CommitmentLevel::Processed,
+                },
+            )
+            .await
+        {
+            Ok(confirmed_tx) => confirmed_tx.value,
+            Err(e) => {
+                eprintln!(
+                    "\r\n\x1B[2K{}: {:?}",
+                    "Failed to get transaction status (retrying...)"
+                        .red()
+                        .bold(),
+                    e.kind
+                );
+                continue;
+            }
+        };
         if confirmed_tx {
             return Ok(true);
         }
@@ -815,3 +853,181 @@ pub async fn get_pool_data(
 /*
 schema to get pool open time (its within pool_info data)
     */
+
+async fn loop_get_account(
+    client: &RpcClient,
+    account_pubkey: &Pubkey,
+    error_message: &str,
+) -> Result<solana_sdk::account::Account, Box<dyn Error>> {
+    let mut account = loop {
+        match client
+            .get_account_with_commitment(
+                account_pubkey,
+                CommitmentConfig {
+                    commitment: CommitmentLevel::Processed,
+                },
+            )
+            .await
+        {
+            Ok(account) => break account,
+            Err(e) => {
+                eprintln!("\r\n\x1B[2K{}: {:?}", error_message.red().bold(), e);
+                continue;
+            }
+        };
+    };
+
+    Ok(account.value.unwrap())
+}
+
+#[derive(Debug)]
+pub struct BalanceChanges {
+    pub sol_balance_changes: HashMap<Pubkey, i128>,
+    pub token_balance_changes: HashMap<Pubkey, i128>,
+}
+
+pub async fn get_balance_changes(
+    client: &RpcClient,
+    tx_hash: &Signature,
+    loop_til_find_tx: bool,
+) -> Result<BalanceChanges, Box<dyn Error>> {
+    let tx = loop {
+        match client
+            .get_transaction_with_config(
+                &tx_hash,
+                RpcTransactionConfig {
+                    commitment: Some(CommitmentConfig {
+                        commitment: CommitmentLevel::Confirmed,
+                    }),
+                    max_supported_transaction_version: Some(0),
+                    encoding: Some(solana_transaction_status::UiTransactionEncoding::JsonParsed),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(tx) => break tx,
+            Err(e) => {
+                if !loop_til_find_tx {
+                    return Err(e.into());
+                }
+
+                eprintln!(
+                    "\r\n\x1B[2K{}: {:?}",
+                    "Failed to get transaction".red().bold(),
+                    e
+                );
+                continue;
+            }
+        };
+    };
+
+    let account_keys = match tx.transaction.transaction {
+        solana_transaction_status::EncodedTransaction::Accounts(transaction) => {
+            transaction.account_keys
+        }
+        solana_transaction_status::EncodedTransaction::Json(transaction) => {
+            match transaction.message {
+                solana_transaction_status::UiMessage::Parsed(message) => message.account_keys,
+                solana_transaction_status::UiMessage::Raw(_) => {
+                    return Err("Failed to get account keys (raw)".into());
+                }
+            }
+        }
+        _ => {
+            return Err("Failed to get account keys".into());
+        }
+    };
+
+    let tx_meta = tx.transaction.meta.expect("tx_meta");
+    let (
+        pre_balances,
+        post_balances,
+        pre_token_balances_serializer,
+        post_token_balances_serializer,
+    ) = (
+        tx_meta.pre_balances,
+        tx_meta.post_balances,
+        tx_meta.pre_token_balances,
+        tx_meta.post_token_balances,
+    );
+
+    let mut sol_balance_changes: HashMap<Pubkey, i128> = HashMap::new();
+    let mut token_balance_changes: HashMap<Pubkey, i128> = HashMap::new();
+
+    let pre_token_balances = match pre_token_balances_serializer {
+        OptionSerializer::Some(pre_token_balances) => pre_token_balances,
+        OptionSerializer::None => {
+            return Err("Failed to get pre_token_balances (none)".into());
+        }
+        OptionSerializer::Skip => {
+            return Err("Failed to get pre_token_balances (skipped)".into());
+        }
+    };
+
+    let post_token_balances = match post_token_balances_serializer {
+        OptionSerializer::Some(post_token_balances) => post_token_balances,
+        OptionSerializer::None => {
+            return Err("Failed to get post_token_balances (none)".into());
+        }
+        OptionSerializer::Skip => {
+            return Err("Failed to get post_token_balances (skipped)".into());
+        }
+    };
+
+    for (i, pre_balance) in pre_balances.iter().enumerate() {
+        let pre_balance: i128 = *pre_balance as i128;
+        let post_balance: i128 = *post_balances.get(i).unwrap() as i128;
+
+        let balance_change: i128 = post_balance - pre_balance;
+
+        let account_key = account_keys.get(i).expect(&format!(
+            "missing a mentioned account key (pre_balance), idx={}",
+            i
+        ));
+
+        sol_balance_changes.insert(Pubkey::from_str(&account_key.pubkey)?, balance_change);
+    }
+
+    for (i, pre_token_balance) in pre_token_balances.iter().enumerate() {
+        let pre_token_balance: i128 = {
+            pre_token_balance
+                .ui_token_amount
+                .amount
+                .parse()
+                .expect("pre_token_balance i128 parse") // overflow ?
+        };
+
+        let post_token_balance: i128 = {
+            let ui = match post_token_balances.get(i) {
+                Some(ui) => ui,
+                None => {
+                    println!("Pre token balance: {:#?}", pre_token_balances);
+                    println!("Post token balance: {:#?}", post_token_balances);
+                    return Err("Failed to get post_token_balance".into());
+                }
+            };
+            ui.ui_token_amount
+                .amount
+                .parse()
+                .expect("post_token_balance i128 parse") // overflow ?
+        };
+
+        let token_balance_change = post_token_balance - pre_token_balance;
+
+        let account_key = account_keys.get(i).expect(&format!(
+            "missing a mentioned account key (post_balance), idx={}",
+            i
+        ));
+
+        token_balance_changes.insert(
+            Pubkey::from_str(&account_key.pubkey)?,
+            token_balance_change as i128,
+        );
+    }
+
+    Ok(BalanceChanges {
+        sol_balance_changes,
+        token_balance_changes,
+    })
+}
