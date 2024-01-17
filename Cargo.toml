@@ -48,6 +48,8 @@ openssl = { version = "0.10", features = ["vendored"] }
 colored = "2.1.0"
 termion = "3.0.0"
 inquire = "0.6.2"
+anyhow = "1.0.79"
+
 [profile.performance]
 inherits = "release"
 incremental = false
