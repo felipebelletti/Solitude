@@ -311,11 +311,6 @@ async fn spam_bundle_snipe(
     buy_amount: f64,
     pool_open_time: Option<u64>,
 ) -> Result<(), Box<dyn Error>> {
-    if std::env::args().find(|arg| arg == "--spam").is_none() {
-        println!("to-do");
-        exit(1);
-    }
-
     let target_timestamp: i64 = match pool_open_time {
         Some(pool_open_time) => pool_open_time as i64,
         None => Text::new("Target timestamp:")
