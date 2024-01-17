@@ -1,15 +1,13 @@
 use chrono::{DateTime, TimeZone, Utc};
 
 use colored::Colorize;
-use jito_protos::{bundle::bundle_result, searcher};
+use jito_protos::bundle::bundle_result;
 use rand::{seq::SliceRandom, thread_rng, Rng};
 
 use raydium_amm::state::GetPoolData;
-use solana_client::{
-    nonblocking::rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig, rpc_request::RpcError,
-};
+use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_program::{
-    instruction::{CompiledInstruction, Instruction},
+    instruction::Instruction,
     program_option::COption,
 };
 use solana_sdk::{
@@ -17,15 +15,14 @@ use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
     native_token::sol_to_lamports,
     pubkey::Pubkey,
-    signature::{Keypair, Signer, Signature},
+    signature::{Keypair, Signer},
     system_instruction::transfer,
     transaction::{Transaction, VersionedTransaction},
 };
 
 use solitude::{
     config::{self, wallet::Wallet},
-    jito::{self, BundleId, SearcherClientError},
-    mev_helpers,
+    jito::{BundleId, SearcherClientError},
     raydium::{self, market::PoolKey, InitializedSwapData},
     utils::{self, generate_tip_account, sell_stream},
 };
@@ -41,15 +38,11 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread::{self, sleep, current},
     time::{self, Duration, SystemTime, UNIX_EPOCH},
 };
 
-use std::fmt::{Display, Formatter};
-
 use inquire::{
-    error::{CustomUserError, InquireResult},
-    required, CustomType, MultiSelect, Select, Text,
+    required, Text,
 };
 
 use solitude::utils::get_token_authority;
