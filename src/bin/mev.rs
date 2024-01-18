@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         panic!("get out");
     }
 
-    println!("A wild mev appeared ~ 0.3");
+    println!("A wild mev appeared ~ 0.3.1");
 
     let wallet = Arc::new(config::wallet::read_from_wallet_file());
 
@@ -356,6 +356,7 @@ async fn spam_bundle_snipe(
         &rpc_client,
         &main_keypair,
         &paired_addr,
+        &wallet,
         &target_addr,
         buy_amount,
     )
@@ -479,7 +480,9 @@ async fn spam_bundle_snipe(
                 })
                 .await.unwrap()
                 .0;
+
                 let min_amount_out = thread_rng().gen_range(0..100);
+
                 let full_swap_chain = raydium::get_modded_swap_chain(
                     &pool_key,
                     initialized_swap_data.clone(),
@@ -492,16 +495,20 @@ async fn spam_bundle_snipe(
                     wallet.bribe_amount,
                     &target_addr,
                 ).unwrap();
+
                 let swap_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
                     &full_swap_chain,
                     Some(&main_keypair.pubkey()),
                     &[main_keypair.as_ref()],
                     cached_blockhash,
                 ));
+
                 println!("Swap Tx Hash: {:?} | {} | {}", swap_tx.signatures[0], cached_blockhash, min_amount_out);
+
                 let bundle_txs = vec![
                     swap_tx,
                 ];
+
                 let broadcast_handles = mev_helpers.broadcast_bundle_to_all_engines(bundle_txs).await;
 
                 for handle in broadcast_handles {

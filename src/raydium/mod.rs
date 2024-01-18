@@ -19,6 +19,8 @@ use solana_sdk::{
 use solana_transaction_status::parse_associated_token::spl_associated_token_id;
 use spl_associated_token_account::get_associated_token_address;
 
+use crate::config::wallet::Wallet;
+
 use self::market::PoolKey;
 
 pub mod market;
@@ -235,11 +237,19 @@ pub async fn get_modded_initialize_swap_instr(
     rpc_client: &RpcClient,
     signer_keypair: &Keypair,
     paired_addr: &Pubkey,
+    wallet: &Wallet,
     token_addr: &Pubkey,
     sol_amount: f64,
 ) -> Result<InitializedSwapData, Box<dyn Error>> {
     let mut instr_chain: Vec<Instruction> =
         vec![ComputeBudgetInstruction::set_compute_unit_limit(352385)];
+
+    if wallet.spam_microlamports_priority != 0 {
+        let increase_gas_priority_instr = ComputeBudgetInstruction::set_compute_unit_price(wallet.spam_microlamports_priority);
+        instr_chain.push(
+            increase_gas_priority_instr
+        );
+    }
 
     let user_target_token_account =
         get_associated_token_address(&signer_keypair.pubkey(), &token_addr);

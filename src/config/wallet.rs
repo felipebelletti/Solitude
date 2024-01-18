@@ -13,6 +13,7 @@ pub struct Wallet {
     pub instasell_enabled: bool,
     pub instasell_percentage: f64,
     pub instasell_bribe: f64,
+    pub spam_microlamports_priority: u64,
 }
 
 pub fn read_from_wallet_file() -> Wallet {

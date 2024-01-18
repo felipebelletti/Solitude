@@ -13,5 +13,7 @@
 
     "instasell_enabled": true,
     "instasell_percentage": 10,
-    "instasell_bribe": 0.001
+    "instasell_bribe": 0.001,
+
+    "spam_microlamports_priority": 100000
 }
