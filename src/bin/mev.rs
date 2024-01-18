@@ -27,8 +27,9 @@ use solitude::{
     jito::{self, BundleId, SearcherClientError},
     mev_helpers,
     raydium::{self, market::PoolKey, InitializedSwapData},
-    utils::{self, generate_tip_account, sell_stream},
+    utils::{self, generate_tip_account, sell_stream, insta_sell},
 };
+use spl_associated_token_account::get_associated_token_address;
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use std::{
@@ -94,6 +95,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let rpc_client = Arc::new(RpcClient::new(rpc_pubsub_addr.to_string()));
     let rpc_pda_client = Arc::new(RpcClient::new(rpc_pda_url.to_string()));
+
+    let random_tip_account = utils::generate_tip_account();
 
     // devnet
     // let EssentialTokenData {
@@ -218,6 +221,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 )
                 .await?;
 
+                match insta_sell(
+                    &main_keypair,
+                    &wallet,
+                    &target_addr,
+                    &paired_addr,
+                    &random_tip_account,
+                    &pool_key,
+                    &rpc_client,
+                    &rpc_pda_client,
+                ).await {
+                    Ok(_) => println!("Insta sell OK"),
+                    Err(e) => println!("Insta sell error: {:?}", e),
+                };
+
                 sell_stream(
                     &rpc_client,
                     &rpc_pda_client,
@@ -330,7 +347,7 @@ async fn spam_bundle_snipe(
 
     let tip_account = generate_tip_account();
     let mev_helpers = Arc::new(
-        MevHelpers::new()
+        MevHelpers::new(None, false)
             .await
             .expect("Failed to initialize MevHelpers"),
     );
@@ -609,7 +626,7 @@ async fn mempool_snipe(
     });
 
     let mev_helpers = Arc::new(
-        MevHelpers::new()
+        MevHelpers::new(None, false)
             .await
             .expect("Failed to initialize MevHelpers"),
     );

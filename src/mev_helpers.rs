@@ -29,7 +29,7 @@ pub struct MevHelpers {
 }
 
 impl MevHelpers {
-    pub async fn new() -> Result<Self, Box<dyn Error>> {
+    pub async fn new(force_rpc_url: Option<&str>, silent: bool) -> Result<Self, Box<dyn Error>> {
         let jito_auth_keypair = Arc::new(
             Keypair::from_bytes(
                 &bs58::decode("***REMOVED***")
@@ -41,25 +41,30 @@ impl MevHelpers {
 
         let rpc_pubsub_addr = "http://127.0.0.1:8900";
 
-        let block_engine_urls = {
-            if wallet::read_from_wallet_file().testnet {
-                vec![
-                    // "https://dallas.testnet.block-engine.jito.wtf",
-                    "https://ny.testnet.block-engine.jito.wtf"
-                ]
-            } else {
-                vec![
-                    "https://frankfurt.mainnet.block-engine.jito.wtf",
-                    "https://amsterdam.mainnet.block-engine.jito.wtf",
-                    "https://ny.mainnet.block-engine.jito.wtf",
-                    // "https://tokyo.mainnet.block-engine.jito.wtf",
-                ]
+        let block_engine_urls = match force_rpc_url {
+            Some(url) => vec![url],
+            None => {
+                if wallet::read_from_wallet_file().testnet {
+                    vec![
+                        // "https://dallas.testnet.block-engine.jito.wtf",
+                        "https://ny.testnet.block-engine.jito.wtf"
+                    ]
+                } else {
+                    vec![
+                        "https://frankfurt.mainnet.block-engine.jito.wtf",
+                        "https://amsterdam.mainnet.block-engine.jito.wtf",
+                        "https://ny.mainnet.block-engine.jito.wtf",
+                        // "https://tokyo.mainnet.block-engine.jito.wtf",
+                    ]
+                }
             }
         };
 
         let mut searcher_clients = Vec::new();
         for url in block_engine_urls.iter() {
-            println!("Initializing Jito MEV on {}", url);
+            if !silent {
+                println!("Initializing Jito MEV on {}", url);
+            }
 
             let (searcher_client, _) = jito::get_searcher_client(
                 &jito_auth_keypair,

@@ -18,6 +18,7 @@ use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
 use solana_sdk::transaction::VersionedTransaction;
 use solana_transaction_status::option_serializer::OptionSerializer;
+use tokio::task::JoinHandle;
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
@@ -54,6 +55,8 @@ use spl_associated_token_account::get_associated_token_address;
 
 use spl_token::state::Mint;
 
+use crate::config::wallet::Wallet;
+use crate::mev_helpers;
 use crate::mev_helpers::MevHelpers;
 use crate::raydium::utils::get_associated_lp_mint;
 
@@ -95,7 +98,7 @@ pub async fn sell_stream(
     bribe_amount_for_sell: f64,
 ) -> Result<(), Box<dyn Error>> {
     let mev_helpers = Arc::new(
-        MevHelpers::new()
+        MevHelpers::new(None, false)
             .await
             .expect("Failed to initialize MevHelpers"),
     );
@@ -142,13 +145,14 @@ pub async fn sell_stream(
 
     let mut token_balance: u64 = loop {
         match pda_client
-        .get_token_account_balance_with_commitment(
-            &target_token_token_account,
-            CommitmentConfig {
-                commitment: CommitmentLevel::Processed,
-            },
-        )
-        .await {
+            .get_token_account_balance_with_commitment(
+                &target_token_token_account,
+                CommitmentConfig {
+                    commitment: CommitmentLevel::Processed,
+                },
+            )
+            .await
+        {
             Ok(token_balance) => break token_balance.value.amount.parse()?,
             Err(e) => {
                 println!(
@@ -297,59 +301,12 @@ pub async fn sell_stream(
                     .bold()
                 );
 
-                let client_clone = pda_client.clone();
-                let seller_address = bought_wallet_address.clone();
-                tokio::spawn(async move {
-                    match confirm_transaction(&client_clone, supposed_sell_hash, 1000, 120).await {
-                        Ok(confirmed_sell_tx) => {
-                            if !confirmed_sell_tx {
-                                println!("\r\n\x1B[2K{}", "Sell transaction failed!".red().bold());
-                                return;
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "\r\n\x1B[2K{}: {:?}",
-                                "Failed to confirm sell transaction".red().bold(),
-                                e
-                            );
-                            return;
-                        }
-                    };
 
-                    let balance_changes =
-                        match get_balance_changes(&client_clone, &supposed_sell_hash, true).await {
-                            Ok(balance_changes) => balance_changes,
-                            Err(e) => {
-                                eprintln!(
-                                    "\r\n\x1B[2K{}: {:?}",
-                                    "Failed to get balance changes".red().bold(),
-                                    e
-                                );
-                                return;
-                            }
-                        };
-
-                    let signer_sol_balance_changes = balance_changes
-                        .sol_balance_changes
-                        .get(&seller_address)
-                        .unwrap_or(&-0)
-                        .clone();
-                    println!(
-                        "{} {} {}\n⮩ Hash: {}\n⮩ {}: {}\n{}\n",
-                        "---------".green().bold(),
-                        "Sell transaction confirmed".green().bold(),
-                        "---------".green().bold(),
-                        supposed_sell_hash.to_string().bright_purple(),
-                        "Sold for ".green().bold(),
-                        (lamports_to_sol(signer_sol_balance_changes as u64)
-                            .to_string() + " SOL")
-                            .bright_yellow(),
-                        "----------------------------------------------"
-                            .green()
-                            .bold(),
-                    );
-                });
+                let _ = spawn_confirm_sell_transaction_task(
+                    pda_client.clone(), 
+                    bought_wallet_address.clone(),
+                    supposed_sell_hash,
+                );
             }
         }
 
@@ -619,7 +576,6 @@ async fn simulate_swap(
         account
     };
 
-
     let mut amm_account_clone = amm_account.clone();
     let mut amm_authority_account_clone = amm_authority_account.clone();
     let mut market_info_account_clone = market_info_account.clone();
@@ -651,7 +607,11 @@ async fn simulate_swap(
             false,
             &mut forged_user_source_account,
         ),
-        (&paired_token_token_account, false, &mut forged_user_dest_account),
+        (
+            &paired_token_token_account,
+            false,
+            &mut forged_user_dest_account,
+        ),
         (
             &bought_wallet_address,
             true,
@@ -1029,5 +989,173 @@ pub async fn get_balance_changes(
     Ok(BalanceChanges {
         sol_balance_changes,
         token_balance_changes,
+    })
+}
+
+pub async fn insta_sell(
+    keypair: &Keypair,
+    wallet: &Wallet,
+    target_addr: &Pubkey,
+    paired_addr: &Pubkey,
+    tip_account: &Pubkey,
+    pool_key: &PoolKey,
+    client: &Arc<RpcClient>,
+    pda_client: &Arc<RpcClient>,
+) -> Result<(), Box<dyn Error>> {
+    if !wallet.instasell_enabled || wallet.instasell_percentage == 0.0 {
+        return Ok(());
+    }
+
+    let mev_helpers = Arc::new(
+        MevHelpers::new(Some("https://frankfurt.mainnet.block-engine.jito.wtf"), true)
+            .await
+            .expect("Failed to initialize MevHelpers"),
+    );
+
+    let target_token_token_account = get_associated_token_address(&keypair.pubkey(), &target_addr);
+
+    let token_balance: u64 = loop {
+        match pda_client
+            .get_token_account_balance_with_commitment(
+                &target_token_token_account,
+                CommitmentConfig {
+                    commitment: CommitmentLevel::Processed,
+                },
+            )
+            .await
+        {
+            Ok(token_balance) => break token_balance.value.amount.parse()?,
+            Err(e) => {
+                println!(
+                    "\r\n\x1B[2K{}: {:?}",
+                    "Unknown token balance, retrying".red().bold(),
+                    e
+                );
+                continue;
+            }
+        };
+    };
+
+    let tokens_sell_amount: u64 =
+        ((wallet.instasell_percentage / 100.0) * token_balance as f64) as u64;
+
+    let blockhash = client
+        .get_latest_blockhash_with_commitment(CommitmentConfig {
+            commitment: CommitmentLevel::Confirmed,
+        })
+        .await
+        .unwrap()
+        .0;
+
+    let bundle_txs = match build_sell_bundle(
+        &pda_client,
+        keypair,
+        tokens_sell_amount,
+        &tip_account,
+        wallet.instasell_bribe,
+        target_addr,
+        paired_addr,
+        pool_key,
+        blockhash,
+    )
+    .await
+    {
+        Ok(bundle_txs) => {
+            println!("\r\n\x1B[2K{}", "Sell bundle successfully built.".blue());
+            bundle_txs
+        }
+        Err(e) => {
+            return Err(format!("Failed to build sell bundle: {:?}", e).into());
+        }
+    };
+    
+    let supposed_sell_hash = bundle_txs[0].signatures[0];
+
+    let broadcast_handles = mev_helpers
+        .broadcast_bundle_to_all_engines(bundle_txs.clone())
+        .await;
+
+    for handle in broadcast_handles {
+        match handle.await {
+            Ok(Ok(bundle_id)) => {
+                println!(
+                    "\r\n\x1B[2K{}: {:?}",
+                    "Insta Sell Bundle ID".yellow(),
+                    bundle_id
+                );
+                break;
+            }
+            Ok(Err(e)) => {
+                eprintln!("\r\n\x1B[2K{}: {:?}", "Error sending bundle".red(), e)
+            }
+            Err(e) => eprintln!("\r\n\x1B[2K{}: {:?}", "Join error".red(), e),
+        }
+    }
+
+    let _ = spawn_confirm_sell_transaction_task(
+        pda_client.clone(), 
+        keypair.pubkey(),
+        supposed_sell_hash,
+    );
+
+    Ok(())
+}
+
+async fn spawn_confirm_sell_transaction_task(
+    pda_client: Arc<RpcClient>,
+    bought_wallet_address: Pubkey,
+    supposed_sell_hash: Signature,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let client_clone = pda_client.clone();
+        let seller_address = bought_wallet_address.clone();
+
+        match confirm_transaction(&client_clone, supposed_sell_hash.clone(), 1000, 120).await {
+            Ok(confirmed_sell_tx) => {
+                if !confirmed_sell_tx {
+                    println!("\r\n\x1B[2K{}", "Sell transaction failed!".red().bold());
+                    return;
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "\r\n\x1B[2K{}: {:?}",
+                    "Failed to confirm sell transaction".red().bold(),
+                    e
+                );
+                return;
+            }
+        };
+
+        let balance_changes = match get_balance_changes(&client_clone, &supposed_sell_hash, true).await {
+            Ok(balance_changes) => balance_changes,
+            Err(e) => {
+                eprintln!(
+                    "\r\n\x1B[2K{}: {:?}",
+                    "Failed to get balance changes".red().bold(),
+                    e
+                );
+                return;
+            }
+        };
+
+        let signer_sol_balance_changes = balance_changes
+            .sol_balance_changes
+            .get(&seller_address)
+            .unwrap_or(&-0)
+            .clone();
+        println!(
+            "{} {} {}\n⮩ Hash: {}\n⮩ {}: {}\n{}\n",
+            "---------".green().bold(),
+            "Sell transaction confirmed".green().bold(),
+            "---------".green().bold(),
+            supposed_sell_hash.to_string().bright_purple(),
+            "Sold for ".green().bold(),
+            (lamports_to_sol(signer_sol_balance_changes as u64).to_string() + " SOL")
+                .bright_yellow(),
+            "----------------------------------------------"
+                .green()
+                .bold(),
+        );
     })
 }

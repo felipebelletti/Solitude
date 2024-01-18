@@ -10,6 +10,9 @@ pub struct Wallet {
     pub filter_liquidity: bool,
     pub bribe_amount_for_sell: f64,
     pub testnet: bool,
+    pub instasell_enabled: bool,
+    pub instasell_percentage: f64,
+    pub instasell_bribe: f64,
 }
 
 pub fn read_from_wallet_file() -> Wallet {

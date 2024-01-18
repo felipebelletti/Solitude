@@ -9,5 +9,9 @@
     "spam": false,
     "filter_liquidity": false,
 
-    "testnet": false
+    "testnet": false,
+
+    "instasell_enabled": true,
+    "instasell_percentage": 10,
+    "instasell_bribe": 0.001
 }
