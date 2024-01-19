@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         panic!("get out");
     }
 
-    println!("A wild mev appeared ~ 0.3.1");
+    println!("A wild mev appeared ~ 0.3.2");
 
     let wallet = Arc::new(config::wallet::read_from_wallet_file());
 

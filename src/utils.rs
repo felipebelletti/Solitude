@@ -7,6 +7,7 @@ use openssl::symm::Mode;
 use rand::thread_rng;
 use rand::Rng;
 use raydium_amm::state::GetPoolData;
+use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_client::rpc_config::RpcTransactionConfig;
 use solana_program::native_token::lamports_to_sol;
 use solana_program::native_token::sol_to_lamports;
@@ -306,7 +307,7 @@ pub async fn sell_stream(
                     pda_client.clone(), 
                     bought_wallet_address.clone(),
                     supposed_sell_hash,
-                );
+                ).await;
             }
         }
 
@@ -1007,7 +1008,7 @@ pub async fn insta_sell(
     }
 
     let mev_helpers = Arc::new(
-        MevHelpers::new(Some("https://frankfurt.mainnet.block-engine.jito.wtf"), true)
+        MevHelpers::new(None, true)
             .await
             .expect("Failed to initialize MevHelpers"),
     );
@@ -1069,11 +1070,17 @@ pub async fn insta_sell(
         }
     };
     
+    let sell_tx = bundle_txs[0].clone();
     let supposed_sell_hash = bundle_txs[0].signatures[0];
 
     let broadcast_handles = mev_helpers
         .broadcast_bundle_to_all_engines(bundle_txs.clone())
         .await;
+
+    let _ = client.send_transaction_with_config(&sell_tx, RpcSendTransactionConfig {
+        skip_preflight: true,
+        ..Default::default()
+    }).await;
 
     for handle in broadcast_handles {
         match handle.await {
@@ -1096,7 +1103,7 @@ pub async fn insta_sell(
         pda_client.clone(), 
         keypair.pubkey(),
         supposed_sell_hash,
-    );
+    ).await;
 
     Ok(())
 }
