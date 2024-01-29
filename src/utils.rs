@@ -15,11 +15,11 @@ use solana_program::system_instruction::transfer;
 use solana_sdk::account::ReadableAccount;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::commitment_config::CommitmentLevel;
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
 use solana_sdk::transaction::VersionedTransaction;
 use solana_transaction_status::option_serializer::OptionSerializer;
-use tokio::task::JoinHandle;
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
@@ -31,6 +31,7 @@ use std::sync::Arc;
 use termion::event::Key;
 use termion::input::TermRead;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
 use chrono::format::DelayedFormat;
@@ -250,6 +251,7 @@ pub async fn sell_stream(
                     paired_token_addr,
                     pool_key,
                     blockhash,
+                    0,
                 )
                 .await
                 {
@@ -302,12 +304,11 @@ pub async fn sell_stream(
                     .bold()
                 );
 
-
-                let _ = spawn_confirm_sell_transaction_task(
-                    pda_client.clone(), 
+                spawn_confirm_sell_transaction_task(
+                    pda_client.clone(),
                     bought_wallet_address.clone(),
                     supposed_sell_hash,
-                ).await;
+                );
             }
         }
 
@@ -407,17 +408,28 @@ pub async fn build_sell_bundle(
     paired_token_addr: &Pubkey,
     pool_key: &PoolKey,
     cached_blockhash: Hash,
+    microlamports_priority: u64,
 ) -> Result<Vec<VersionedTransaction>, Box<dyn Error>> {
+    let mut instr_chain: Vec<Instruction> = vec![];
+
+    if microlamports_priority > 0 {
+        let increase_gas_priority_instr =
+            ComputeBudgetInstruction::set_compute_unit_price(microlamports_priority);
+        instr_chain.push(increase_gas_priority_instr);
+    }
+
+    instr_chain.extend(raydium::get_swap_out_instr(
+        &client,
+        &signer,
+        &pool_key,
+        &paired_token_addr,
+        &target_token_addr,
+        token_amount,
+    )
+    .await?);
+
     let swap_instr_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-        &raydium::get_swap_out_instr(
-            &client,
-            &signer,
-            &pool_key,
-            &paired_token_addr,
-            &target_token_addr,
-            token_amount,
-        )
-        .await?,
+        &instr_chain,
         Some(&signer.pubkey()),
         &[signer],
         cached_blockhash,
@@ -1058,6 +1070,7 @@ pub async fn insta_sell(
         paired_addr,
         pool_key,
         blockhash,
+        wallet.instasell_microlamports_priority,
     )
     .await
     {
@@ -1069,7 +1082,7 @@ pub async fn insta_sell(
             return Err(format!("Failed to build sell bundle: {:?}", e).into());
         }
     };
-    
+
     let sell_tx = bundle_txs[0].clone();
     let supposed_sell_hash = bundle_txs[0].signatures[0];
 
@@ -1077,17 +1090,34 @@ pub async fn insta_sell(
         .broadcast_bundle_to_all_engines(bundle_txs.clone())
         .await;
 
-    let _ = client.send_transaction_with_config(&sell_tx, RpcSendTransactionConfig {
-        skip_preflight: true,
-        ..Default::default()
-    }).await;
+    match client
+        .send_transaction_with_config(
+            &sell_tx,
+            RpcSendTransactionConfig {
+                skip_preflight: true,
+                ..Default::default()
+            },
+        )
+        .await
+    {
+        Ok(signature) => {
+            println!(
+                "{}: {:?}",
+                "Sell transaction sent (through normal nodes)".blue(),
+                signature
+            );
+        }
+        Err(e) => {
+            return Err(format!("Failed to send sell transaction: {:?}", e).into());
+        }
+    };
 
     for handle in broadcast_handles {
         match handle.await {
             Ok(Ok(bundle_id)) => {
                 println!(
-                    "\r\n\x1B[2K{}: {:?}",
-                    "Insta Sell Bundle ID".yellow(),
+                    "{}: {:?}",
+                    "Insta Sell Bundle ID (through JITO)".yellow(),
                     bundle_id
                 );
                 break;
@@ -1099,16 +1129,12 @@ pub async fn insta_sell(
         }
     }
 
-    let _ = spawn_confirm_sell_transaction_task(
-        pda_client.clone(), 
-        keypair.pubkey(),
-        supposed_sell_hash,
-    ).await;
+    spawn_confirm_sell_transaction_task(pda_client.clone(), keypair.pubkey(), supposed_sell_hash);
 
     Ok(())
 }
 
-async fn spawn_confirm_sell_transaction_task(
+fn spawn_confirm_sell_transaction_task(
     pda_client: Arc<RpcClient>,
     bought_wallet_address: Pubkey,
     supposed_sell_hash: Signature,
@@ -1134,17 +1160,18 @@ async fn spawn_confirm_sell_transaction_task(
             }
         };
 
-        let balance_changes = match get_balance_changes(&client_clone, &supposed_sell_hash, true).await {
-            Ok(balance_changes) => balance_changes,
-            Err(e) => {
-                eprintln!(
-                    "\r\n\x1B[2K{}: {:?}",
-                    "Failed to get balance changes".red().bold(),
-                    e
-                );
-                return;
-            }
-        };
+        let balance_changes =
+            match get_balance_changes(&client_clone, &supposed_sell_hash, true).await {
+                Ok(balance_changes) => balance_changes,
+                Err(e) => {
+                    eprintln!(
+                        "\r\n\x1B[2K{}: {:?}",
+                        "Failed to get balance changes".red().bold(),
+                        e
+                    );
+                    return;
+                }
+            };
 
         let signer_sol_balance_changes = balance_changes
             .sol_balance_changes

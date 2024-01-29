@@ -64,13 +64,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .expect("Time went backwards");
     let current_date: DateTime<Utc> =
         Utc.timestamp(current_time.as_secs() as i64, current_time.subsec_nanos());
-    let cutoff_date: DateTime<Utc> = Utc.ymd(2024, 1, 22).and_hms(0, 0, 0);
+    let cutoff_date: DateTime<Utc> = Utc.ymd(2024, 2, 12).and_hms(0, 0, 0);
 
     if current_date >= cutoff_date {
         panic!("get out");
     }
 
-    println!("A wild mev appeared ~ 0.3.2");
+    println!("A wild mev appeared ~ 0.3.3");
 
     let wallet = Arc::new(config::wallet::read_from_wallet_file());
 
@@ -89,7 +89,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if wallet.testnet {
             "https://api.devnet.solana.com"
         } else {
-            "https://tame-ancient-mountain.solana-mainnet.quiknode.pro/6a9a95bf7bbb108aea620e7ee4c1fd5e1b67cc62"
+            "https://virulent-sparkling-rain.solana-mainnet.quiknode.pro/***REMOVED***"
         }
     };
 
@@ -200,6 +200,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match menu_choice.as_str() {
             "Liquidity Sniping" => {
                 let EssentialTokenData {
+                    dev_wallet_addr,
                     target_addr,
                     paired_addr,
                     market_account_pubkey,
@@ -216,6 +217,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     &main_keypair,
                     &target_addr,
                     &paired_addr,
+                    &dev_wallet_addr,
                     &pool_key,
                     buy_amount,
                 )
@@ -250,6 +252,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             "Bundle Spamming" => {
                 let EssentialTokenData {
+                    dev_wallet_addr: _,
                     target_addr,
                     paired_addr,
                     market_account_pubkey,
@@ -287,6 +290,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             "Sell Stream" => {
                 let EssentialTokenData {
+                    dev_wallet_addr: _,
                     target_addr,
                     paired_addr,
                     market_account_pubkey,
@@ -373,7 +377,8 @@ async fn spam_bundle_snipe(
     // let (blockhash_tx, mut blockhash_rx) = mpsc::unbounded_channel();
 
     // let mut blockhash_tick = tokio::time::interval(Duration::from_secs(5));
-    let mut spam_tick = tokio::time::interval(Duration::from_millis(250));
+    // changed from 250 (safe) to 235
+    let mut spam_tick = tokio::time::interval(Duration::from_millis(235));
 
     /*
     let (searcher_client, _) = jito::get_searcher_client(
@@ -616,6 +621,7 @@ async fn mempool_snipe(
     main_keypair: &Arc<Keypair>,
     target_addr: &Pubkey,
     paired_addr: &Pubkey,
+    dev_wallet_addr: &Pubkey,
     pool_key: &PoolKey,
     buy_amount: f64,
 ) -> Result<(), Box<dyn Error>> {
@@ -660,17 +666,8 @@ async fn mempool_snipe(
         .await?,
     );
 
-    let dev_wallet_addr = match get_token_authority(rpc_pda_client.as_ref(), &target_addr).await? {
-        COption::Some(w) => w,
-        COption::None => {
-            println!("Input Dev wallet address: ");
-            read_pubkey_from_stdin()?
-        }
-    };
-    println!("Dev wallet address: {}", &dev_wallet_addr);
-
     let watch_mempool_addresses: Vec<Pubkey> = vec![
-        dev_wallet_addr,
+        dev_wallet_addr.clone(),
         Pubkey::from_str("***REMOVED***")?, // target_addr,
     ];
 
@@ -895,6 +892,7 @@ pub fn graceful_panic(callback: Option<fn(&PanicInfo)>) -> Arc<AtomicBool> {
 }
 
 struct EssentialTokenData {
+    dev_wallet_addr: Pubkey,
     target_addr: Pubkey,
     paired_addr: Pubkey,
     market_account_pubkey: Pubkey,
@@ -915,6 +913,15 @@ async fn get_required_token_data(
             read_pubkey_from_stdin().unwrap()
         }
     };
+
+    let dev_wallet_addr = match get_token_authority(rpc_pda_client.as_ref(), &target_addr).await? {
+        COption::Some(w) => w,
+        COption::None => {
+            println!("Input Dev wallet address: ");
+            read_pubkey_from_stdin()?
+        }
+    };
+    println!("Dev wallet address: {}", &dev_wallet_addr);
 
     let (market_account_pubkey, market_account) =
         raydium::market::exhaustive_get_openbook_market_for_address(&target_addr, &rpc_pda_client)
@@ -967,6 +974,7 @@ async fn get_required_token_data(
                 .yellow()
             );
             return Ok(EssentialTokenData {
+                dev_wallet_addr,
                 target_addr,
                 paired_addr,
                 market_account_pubkey,
@@ -988,6 +996,7 @@ async fn get_required_token_data(
         );
 
         return Ok(EssentialTokenData {
+            dev_wallet_addr,
             target_addr,
             paired_addr,
             market_account_pubkey,
@@ -998,6 +1007,7 @@ async fn get_required_token_data(
     }
 
     Ok(EssentialTokenData {
+        dev_wallet_addr,
         target_addr,
         paired_addr,
         market_account_pubkey,

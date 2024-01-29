@@ -99,6 +99,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Pubkey::from_str("bjEf4LPBqwGfn8xGfSToy7VUanQeT1EifEwZDopHk9Y")?,
         "detetive",
     );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("TCdVsYnw2KZWk5MKFkbEq425Lv46fZXEAkm5khVmZvX")?,
+        "DecentGambler"
+    );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("8yXDV56pwVpNKM1MMHWvuiS32ukSTnrKQS7r5mNVbEUB")?,
+        "DepressoGuy"
+    );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("B9rFutZrr1FLApykhM5sd2RCoCWepticVfustEGhbmLt")?,
+        "Cartel"
+    );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("E36N6gP9ZKmuCzDEKm1az6mNnNkrFshspCaTMnXQYELK")?,
+        "Cartel2"
+    );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("BT5iBDXHSpdVG7rnHj7K9jc6qLMF7RzC1uCXxB5Bd7pt")?,
+        "CartelNova"
+    );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("61Gt4s8PXPWwUnUvxjy3G6G6T77VeoqnRCVUURpfyHvj")?,
+        "InsiderLandon"
+    );
+    wallet_to_person.lock().unwrap().insert(
+        Pubkey::from_str("HzRkCQPQ26sPTQzkjBkEC4SBcFeKhH6juKTJ1q6gxF7P")?,
+        "hitari.sol"
+    );
     let ignore_unknown_callers = true;
 
     loop {
@@ -155,7 +183,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             };
                             let target_token_address = {
-                                if target_token_address_index > &accounts.len() as &u8 {
+                                let len = accounts.len() as u8;
+                                mask
+                                if target_token_address_index > &len {
                                     println!("target_token_address_index > accounts.len()");
                                     Pubkey::default()
                                 } else {
