@@ -207,7 +207,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     pool_key,
                     buy_amount,
                     pool_open_time: _,
-                } = get_required_token_data(&rpc_pda_client, &wallet, None).await?;
+                } = get_required_token_data(&rpc_pda_client, &wallet, None, true).await?;
                 println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
 
                 mempool_snipe(
@@ -259,7 +259,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     pool_key,
                     buy_amount,
                     pool_open_time,
-                } = get_required_token_data(&rpc_pda_client, &wallet, None).await?;
+                } = get_required_token_data(&rpc_pda_client, &wallet, None, false).await?;
                 println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
 
                 spam_bundle_snipe(
@@ -297,7 +297,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     pool_key,
                     buy_amount,
                     pool_open_time: _,
-                } = get_required_token_data(&rpc_pda_client, &wallet, None).await?;
+                } = get_required_token_data(&rpc_pda_client, &wallet, None, false).await?;
                 println!("Target: {}\nPaired Addr: {}", target_addr, paired_addr);
 
                 sell_stream(
@@ -374,31 +374,12 @@ async fn spam_bundle_snipe(
         .0;
 
     let mut bundle_results_ch = mev_helpers.listen_for_bundle_results().await;
-    // let (blockhash_tx, mut blockhash_rx) = mpsc::unbounded_channel();
 
     // let mut blockhash_tick = tokio::time::interval(Duration::from_secs(5));
     // changed from 250 (safe) to 235
-    let mut spam_tick = tokio::time::interval(Duration::from_millis(235));
+    // ok changed from 235 to 250 again because of $JUP
+    let mut spam_tick = tokio::time::interval(Duration::from_millis(250));
 
-    /*
-    let (searcher_client, _) = jito::get_searcher_client(
-        &Arc::new(
-            Keypair::from_bytes(
-                &bs58::decode("***REMOVED***")
-                    .into_vec()
-                    .unwrap(),
-            )
-            .unwrap(),
-        ),
-        &graceful_panic(None),
-        "https://frankfurt.mainnet.block-engine.jito.wtf",
-        "http://127.0.0.1:8900",
-    )
-    .await
-    .expect("get_searcher_client failed");
-    let searcher_client = Arc::new(searcher_client);
-    let mut bundle_results_ch = searcher_client.subscribe_bundle_results(1024).await?;
-    */
     let tip_accounts = utils::get_tip_accounts();
 
     // let full_swap_chain = raydium::get_modded_swap_chain(
@@ -435,13 +416,16 @@ async fn spam_bundle_snipe(
         tokio::select! {
             _ = spam_tick.tick() => {
                 let current_timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-                if current_timestamp < target_start_time {
-                    continue;
-                }
-                if current_timestamp > target_timestamp + 1 {
-                    continue
-                    // println!("Target timestamp reached, exiting...");
-                    // break;
+
+                if target_timestamp != 0 {
+                    if current_timestamp < target_start_time {
+                        continue;
+                    }
+                    if current_timestamp > target_timestamp + 1 {
+                        continue
+                        // println!("Target timestamp reached, exiting...");
+                        // break;
+                    }
                 }
 
                 /*
@@ -508,7 +492,7 @@ async fn spam_bundle_snipe(
                     cached_blockhash,
                 ));
 
-                println!("Swap Tx Hash: {:?} | {} | {}", swap_tx.signatures[0], cached_blockhash, min_amount_out);
+                // println!("Swap Tx Hash: {:?} | {} | {}", swap_tx.signatures[0], cached_blockhash, min_amount_out);
 
                 let bundle_txs = vec![
                     swap_tx,
@@ -523,45 +507,6 @@ async fn spam_bundle_snipe(
                         Err(e) => eprintln!("Join error: {:?}", e),
                     }
                 }
-
-                /*
-                let mev_helpers_clone_searcher_iter = mev_helpers.searcher_clients.iter().map(Arc::clone);
-
-                for client in mev_helpers_clone_searcher_iter {
-                    let main_keypair = Arc::clone(&main_keypair);
-                    let tip_accounts = tip_accounts.clone();
-                    let wallet = Arc::clone(&wallet);
-                    let initialized_swap_data = initialized_swap_data.clone();
-                    let pool_key = pool_key.clone();
-
-                    // for each mev client we have to send a different transaction, so we need to use different memos
-                    tokio::spawn(async move {
-                        let full_swap_chain = raydium::get_modded_swap_chain(
-                            &pool_key,
-                            initialized_swap_data.clone(),
-                            &main_keypair,
-                            target_timestamp,
-                            buy_amount,
-                            thread_rng().gen_range(0..30), // tricky for randomizing generated tx (parallelism)
-
-                            // &tip_accounts.choose(&mut thread_rng()).unwrap(),
-                            &tip_account,
-                            wallet.bribe_amount,
-                        ).unwrap();
-
-                        let bundle_txs = vec![
-                            VersionedTransaction::from(Transaction::new_signed_with_payer(
-                                &full_swap_chain,
-                                Some(&main_keypair.pubkey()),
-                                &[main_keypair.as_ref()],
-                                cached_blockhash,
-                            )),
-                        ];
-                        let bundle_id = client.send_bundle(bundle_txs).await;
-                        println!("Bundle ID received from one JITO Engine: {:?}", bundle_id);
-                    });
-                }
-                */
             }
             maybe_bundle_result = bundle_results_ch.recv() => {
                 if let Some(bundle_result) = maybe_bundle_result {
@@ -590,24 +535,6 @@ async fn spam_bundle_snipe(
                 println!("Bundle results channel was disconnected. Restart required.");
                 break;
             }
-            // _ = blockhash_tick.tick() => {
-            //     let client_clone = Arc::clone(&rpc_client);
-            //     let blockhash_tx_clone = blockhash_tx.clone();
-            //     tokio::spawn(async move {
-            //         let new_blockhash = client_clone
-            //             .get_latest_blockhash_with_commitment(CommitmentConfig {
-            //                 commitment: CommitmentLevel::Confirmed,
-            //             })
-            //             .await.unwrap()
-            //             .0;
-            //         blockhash_tx_clone.send(new_blockhash).unwrap();
-            //     });
-            // }
-            // _ = tokio::task::yield_now() => {
-            //     if let Ok(blockhash) = blockhash_rx.try_recv() {
-            //         cached_blockhash = blockhash;
-            //     }
-            // }
         }
     }
 
@@ -905,6 +832,7 @@ async fn get_required_token_data(
     rpc_pda_client: &Arc<RpcClient>,
     wallet: &Wallet,
     target_addr: Option<Pubkey>,
+    ask_for_dev_wallet: bool,
 ) -> Result<EssentialTokenData, Box<dyn Error>> {
     let target_addr = match target_addr {
         Some(addr) => addr,
@@ -917,8 +845,12 @@ async fn get_required_token_data(
     let dev_wallet_addr = match get_token_authority(rpc_pda_client.as_ref(), &target_addr).await? {
         COption::Some(w) => w,
         COption::None => {
-            println!("Input Dev wallet address: ");
-            read_pubkey_from_stdin()?
+            if !ask_for_dev_wallet {
+                Pubkey::from_str("***REMOVED***").unwrap()
+            } else {
+                println!("Input Dev wallet address: ");
+                read_pubkey_from_stdin()?
+            }
         }
     };
     println!("Dev wallet address: {}", &dev_wallet_addr);
@@ -934,6 +866,8 @@ async fn get_required_token_data(
         &market_account_pubkey,
     )
     .await?;
+
+    println!("Pool Key:\n{:#?}", &pool_key);
 
     let paired_addr = {
         if pool_key.base_mint == target_addr {

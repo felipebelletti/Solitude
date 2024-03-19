@@ -78,7 +78,22 @@ pub async fn get_openbook_market_for_address(
         .await?;
 
     if base_mint_filtered_accounts.len() > 0 {
-        return Ok(base_mint_filtered_accounts[0].clone());
+        println!("Found it as base mint");
+
+        println!("\nMultiple pools found, select one: ");
+
+        for (i, pool) in base_mint_filtered_accounts.iter().enumerate() {
+            let parsed_market = parse_openbook_market_account(&pool.1);
+            println!("[{}] BaseMint: {} | QuoteMint: {} | MarketId: {}", i, parsed_market.base_mint, parsed_market.quote_mint, parsed_market.market_id);
+        }
+
+        println!("\nEnter the pool index > ");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).unwrap();
+        let index = input.trim().parse::<usize>().unwrap();
+        let selected_pool = base_mint_filtered_accounts[index].clone();
+
+        return Ok(selected_pool);
     }
 
     let quote_mint_filtered_accounts = client
@@ -104,7 +119,22 @@ pub async fn get_openbook_market_for_address(
         .unwrap();
 
     if quote_mint_filtered_accounts.len() > 0 {
-        return Ok(quote_mint_filtered_accounts[0].clone());
+        println!("Found it as quote mint");
+        
+        println!("\nMultiple pools found, select one: ");
+
+        for (i, pool) in base_mint_filtered_accounts.iter().enumerate() {
+            let parsed_market = parse_openbook_market_account(&pool.1);
+            println!("[{}] BaseMint: {} | QuoteMint: {} | MarketId: {}", i, parsed_market.base_mint, parsed_market.quote_mint, parsed_market.market_id);
+        }
+
+        println!("\nEnter the pool index > ");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).unwrap();
+        let index = input.trim().parse::<usize>().unwrap();
+        let selected_pool = base_mint_filtered_accounts[index].clone();
+
+        return Ok(selected_pool);
     }
 
     Err("No market found for token".into())

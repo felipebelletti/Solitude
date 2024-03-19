@@ -184,7 +184,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             };
                             let target_token_address = {
                                 let len = accounts.len() as u8;
-                                mask
                                 if target_token_address_index > &len {
                                     println!("target_token_address_index > accounts.len()");
                                     Pubkey::default()
